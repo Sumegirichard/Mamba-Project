@@ -1,4 +1,9 @@
+from pathlib import Path
+
 import pandas as pd
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
 
 def check_image_duplicates(csv_file):
     print(f"Adatok betöltése a '{csv_file}' fájlból...")
@@ -23,4 +28,4 @@ def check_image_duplicates(csv_file):
         print("\nSzuper! Nincs egyetlen duplikált image_path sem az adatbázisban. Minden kép egyedi.")
 
 if __name__ == "__main__":
-    check_image_duplicates("merged_snake_metadata.csv")
+    check_image_duplicates(DATA_DIR / "merged_snake_metadata.csv")

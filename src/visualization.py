@@ -2,12 +2,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
+PLOTS_DIR = PROJECT_ROOT / "plots"
 
 def create_visualizations(csv_path):
     print("Adatok betöltése és ábrák generálása...")
     df = pd.read_csv(csv_path)
     
-    os.makedirs('plots', exist_ok=True)
+    os.makedirs(PLOTS_DIR, exist_ok=True)
     
     # 1. Mérgező eloszlás
     plt.figure(figsize=(8, 6))
@@ -18,7 +23,7 @@ def create_visualizations(csv_path):
     for p in ax.patches:
         ax.annotate(f'{int(p.get_height())}', (p.get_x() + p.get_width() / 2., p.get_height()),
                     ha='center', va='center', xytext=(0, 5), textcoords='offset points')
-    plt.savefig('plots/venomous_distribution.png')
+    plt.savefig(PLOTS_DIR / 'venomous_distribution.png')
     plt.close()
     
     # 2. Top 15 faj
@@ -29,10 +34,10 @@ def create_visualizations(csv_path):
     plt.xlabel('Képek száma')
     plt.ylabel('Faj neve')
     plt.tight_layout()
-    plt.savefig('plots/top_species_distribution.png')
+    plt.savefig(PLOTS_DIR / 'top_species_distribution.png')
     plt.close()
 
     print("Az ábrák sikeresen elkészültek a 'plots' mappában!")
 
 if __name__ == "__main__":
-    create_visualizations("merged_snake_metadata.csv")
+    create_visualizations(DATA_DIR / "merged_snake_metadata.csv")

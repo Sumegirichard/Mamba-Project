@@ -1,4 +1,9 @@
+from pathlib import Path
+
 import pandas as pd
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
 
 def merge_metadata(train_csv_path, venomous_csv_path, output_csv_path):
     # CSV fájlok beolvasása
@@ -18,8 +23,8 @@ def merge_metadata(train_csv_path, venomous_csv_path, output_csv_path):
     print(f"Az adatok sikeresen összefűzve és mentve ide: {output_csv_path}")
 
 if __name__ == "__main__":
-    train_path = 'train_images_metadata.csv'
-    venomous_path = 'venomous_status_metadata.csv'
-    output_path = 'merged_snake_metadata.csv'
+    train_path = DATA_DIR / 'train_images_metadata.csv'
+    venomous_path = DATA_DIR / 'venomous_status_metadata.csv'
+    output_path = DATA_DIR / 'merged_snake_metadata.csv'
     
     merge_metadata(train_path, venomous_path, output_path)

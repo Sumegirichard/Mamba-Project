@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import tensorflow as tf
 from tensorflow.keras import layers, models, Input
 import pandas as pd
@@ -6,7 +7,10 @@ import pandas as pd
 # ---------------------------------------------------------
 # BEÁLLÍTÁSOK (Ezt írjátok át a saját mappátokra!)
 # ---------------------------------------------------------
-IMAGE_DIR = 'train_images_small\\train_images_small' # A mappa, ahol a tényleges .jpg képek vannak
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
+IMAGE_DIR = DATA_DIR / "train_images_small" / "train_images_small"
+MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.h5"
 BATCH_SIZE = 32
 EPOCHS = 1
 
@@ -73,8 +77,8 @@ def build_model(num_species=296):
 # ---------------------------------------------------------
 if __name__ == "__main__":
     print("Adatok betöltése...")
-    train_ds = create_dataset("train_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
-    val_ds = create_dataset("val_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
+    train_ds = create_dataset(DATA_DIR / "train_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
+    val_ds = create_dataset(DATA_DIR / "val_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
     
     model = build_model()
     
@@ -98,5 +102,5 @@ if __name__ == "__main__":
     )
     
     # Modell mentése a tanítás végén
-    model.save('snake_multitask_model.h5')
+    model.save(str(MODEL_PATH))
     print("Tanítás befejeződött, modell elmentve!")

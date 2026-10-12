@@ -1,11 +1,14 @@
 import numpy as np
+from pathlib import Path
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import matplotlib.image as mpimg
 
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
-df = pd.read_csv("merged_snake_metadata.csv")
+df = pd.read_csv(DATA_DIR / "merged_snake_metadata.csv")
 print(f"Sorok száma: {df.shape[0]}, Oszlopok száma: {df.shape[1]}")
 
 print(df.info())
@@ -23,7 +26,7 @@ missing_pct = (missing / len(df)) * 100
 missing_df = pd.DataFrame({"Hiányzó darabszám": missing, "Hiányzó arány (%)": missing_pct})
 print(missing_df[missing_df["Hiányzó darabszám"] > 0])
 
-df = pd.read_csv("merged_snake_metadata.csv")
+df = pd.read_csv(DATA_DIR / "merged_snake_metadata.csv")
 
 # 2. Összes sor és oszlop száma
 print(f"Összes sor (kép) száma: {len(df)}")
@@ -46,7 +49,7 @@ print(df["binomial_name"].value_counts().tail(5))
 egyedi_kepek_szama = df["image_path"].nunique()
 
 # 1. Adatok beolvasása
-df = pd.read_csv("merged_snake_metadata.csv")
+df = pd.read_csv(DATA_DIR / "merged_snake_metadata.csv")
 faj_eloszlas = df["binomial_name"].value_counts()
 
 # 2. Ábrák létrehozása egymás mellett
@@ -85,7 +88,7 @@ plt.show()
 
 import zipfile
 
-ZIP_PATH = "train_images_small.zip"
+ZIP_PATH = DATA_DIR / "train_images_small.zip"
 TARGET_SIZE = (224, 224)
 MAX_IMAGES = 32  # Ennyit olvasunk be mintának
 

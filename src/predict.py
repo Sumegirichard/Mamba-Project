@@ -1,9 +1,14 @@
 import tensorflow as tf
 import numpy as np
 import os
+from pathlib import Path
 
 # Felesleges TF logok elrejtése
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.h5"
+
 
 def preprocess_single_image(image_path):
     # 1. Kép betöltése és előkészítése (pontosan úgy, mint a tanításnál!)
@@ -22,7 +27,7 @@ def test_prediction(image_path):
     
     # 2. Modell betöltése
     # compile=False: Mivel csak jósolni akarunk, nem kell neki a Loss függvény!
-    model = tf.keras.models.load_model('snake_multitask_model.h5', compile=False)
+    model = tf.keras.models.load_model(str(MODEL_PATH), compile=False)
     
     # 3. Kép átalakítása tenzorrá
     img_tensor = preprocess_single_image(image_path)
@@ -58,7 +63,7 @@ def test_prediction(image_path):
 if __name__ == "__main__":
     # Írd ide egy olyan kép nevét, amit be akarsz adni a gépnek!
     # (Lehet a 'snake_images_small' mappából egy fájl, vagy egy internetről letöltött .jpg is)
-    TESZT_KEP = "train_images_small\\train_images_small\\3270482.jpeg" #Eunectes murinus; 0 -nem mérgező
+    TESZT_KEP = str(PROJECT_ROOT / "data" / "train_images_small" / "train_images_small" / "3270482.jpeg") #Eunectes murinus; 0 -nem mérgező
     
     try:
         test_prediction(TESZT_KEP)
