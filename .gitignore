@@ -1,6 +1,9 @@
 # Lokális tanító adathalmaz (zip és a kicsomagolt mappa)
 data/train_images_small.zip
 data/train_images_small/
-
+data/train_images_medium.zip
+data/train_images_medium/
+data/train_images_large.zip
+data/train_images_large/
 # Ha esetleg más zip fájlokat sem akarsz felengedni (opcionális):
 # *.zip
