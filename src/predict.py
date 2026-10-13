@@ -63,7 +63,7 @@ def test_prediction(image_path):
 if __name__ == "__main__":
     # Írd ide egy olyan kép nevét, amit be akarsz adni a gépnek!
     # (Lehet a 'snake_images_small' mappából egy fájl, vagy egy internetről letöltött .jpg is)
-    TESZT_KEP = str(PROJECT_ROOT / "data" / "train_images_small" / "train_images_small" / "3270482.jpeg") #Eunectes murinus; 0 -nem mérgező
+    TESZT_KEP = str(PROJECT_ROOT / "data" / "train_images_small" / "train_images_small" / "47464.jpg") #Dispholidus typus; 1 - mérgező
     
     try:
         test_prediction(TESZT_KEP)
