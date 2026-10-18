@@ -6,5 +6,5 @@ data/train_images_medium/
 data/train_images_large.zip
 data/train_images_large/
 data/train_images_224_letterboxed
-# Ha esetleg más zip fájlokat sem akarsz felengedni (opcionális):
-# *.zip
+data/train_images_224_letterboxed.zip
+*.zip

@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from PIL import Image, ImageOps
-from tqdm import tqdm  # Csomag telepítése, ha nincs: pip install tqdm
+from tqdm import tqdm 
 
 # ---------------------------------------------------------
 # BEÁLLÍTÁSOK
@@ -14,8 +14,7 @@ except NameError:
     PROJECT_ROOT = Path().resolve().parents[1] 
 
 DATA_DIR = PROJECT_ROOT / "data"
-# A mappák neveit cseréld ki a megfelelőre!
-INPUT_DIR = DATA_DIR / "train_images_small" / "train_images_small"
+INPUT_DIR = DATA_DIR / "train_images_medium" / "train_images_medium"
 OUTPUT_DIR = DATA_DIR / "train_images_224_letterboxed"
 
 TARGET_SIZE = (224, 224)
@@ -58,7 +57,7 @@ def process_and_save_images(input_dir, output_dir, target_size, pad_color):
                 save_path = output_dir / img_path.name
                 
                 # Kép elmentése magas minőségben
-                letterboxed_img.save(save_path, format="JPEG", quality=95)
+                letterboxed_img.save(save_path, format="JPEG", quality=100)
                 
         except Exception as e:
             print(f"\nHiba történt a(z) {img_path.name} fájl feldolgozásakor: {e}")
