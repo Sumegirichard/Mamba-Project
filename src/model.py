@@ -72,7 +72,7 @@ else:
 BATCH_SIZE = 128
 WARMUP_EPOCHS = 3
 FINETUNE_EPOCHS = 10
-WARMUP_LR = 2e-3      # <-- Ide írd be az lr_finder.py által megtalált értéket!
+WARMUP_LR = 5e-4
 FINETUNE_LR = 1.5e-4
 
 # ---------------------------------------------------------
