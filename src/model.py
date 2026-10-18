@@ -4,7 +4,6 @@ import zipfile
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
@@ -58,7 +57,6 @@ if IN_COLAB:
     IMAGE_DIR = nested_dir if nested_dir.exists() else EXTRACT_PATH
     MODEL_PATH = DRIVE_DIR / "snake_multitask_model.keras"
     WARMUP_LOG_PATH = DRIVE_DIR / "warmup_log.csv"
-    PLOT_PATH = DRIVE_DIR / "lr_finder_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -68,16 +66,14 @@ else:
     IMAGE_DIR = DATA_DIR / "train_images_224_letterboxed"
     MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.keras"
     WARMUP_LOG_PATH = PROJECT_ROOT / "models" / "warmup_log.csv"
-    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_plot.png"
     os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
 # Hiperparaméterek
 BATCH_SIZE = 128
 WARMUP_EPOCHS = 3
 FINETUNE_EPOCHS = 10
-DEFAULT_WARMUP_LR = 2e-3
+WARMUP_LR = 2e-3      # <-- Ide írd be az lr_finder.py által megtalált értéket!
 FINETUNE_LR = 1.5e-4
-RUN_LR_FINDER = True  # Ha True, az 1. fázis előtt automatikusan megkeresi a legjobb WARMUP_LR-t
 
 # ---------------------------------------------------------
 # 2. GYORS ADATBETÖLTŐ PIPELINE (uint8 + INTEGER_FAST)
@@ -180,83 +176,7 @@ def resnet_preprocess_fn(x):
     return preprocess_input(tf.cast(x, tf.float32))
 
 # ---------------------------------------------------------
-# 4. AUTOMATIKUS LEARNING RATE FINDER CALLBACK
-# ---------------------------------------------------------
-class LRFinder(tf.keras.callbacks.Callback):
-    def __init__(self, start_lr=1e-6, end_lr=1e-1, max_steps=200):
-        super().__init__()
-        self.start_lr = start_lr
-        self.end_lr = end_lr
-        self.max_steps = max_steps
-        self.factor = (end_lr / start_lr) ** (1.0 / max_steps)
-        self.lrs = []
-        self.losses = []
-        self.smoothed_losses = []
-        self.best_loss = float('inf')
-        self.step = 0
-
-    def _set_lr(self, lr):
-        # Kompatibilis mind a régebbi TF 2.x, mind az új Keras 3 optimalizálókkal
-        if hasattr(self.model.optimizer, 'learning_rate'):
-            self.model.optimizer.learning_rate.assign(lr)
-        else:
-            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
-
-    def on_train_batch_begin(self, batch, logs=None):
-        lr = self.start_lr * (self.factor ** self.step)
-        self._set_lr(lr)
-        self.lrs.append(lr)
-
-    def on_train_batch_end(self, batch, logs=None):
-        loss = float(logs.get('loss', 0.0))
-        self.losses.append(loss)
-
-        if self.step == 0:
-            smooth = loss
-        else:
-            smooth = 0.85 * self.smoothed_losses[-1] + 0.15 * loss
-        self.smoothed_losses.append(smooth)
-
-        if smooth < self.best_loss:
-            self.best_loss = smooth
-
-        self.step += 1
-
-        # Ha a hiba felrobban (4x nagyobb, mint az eddigi legjobb), azonnal leállítjuk a tesztet
-        if self.step > 20 and (np.isnan(loss) or smooth > 4.0 * self.best_loss):
-            print(f"\n[LRFinder] Hiba kilőtt (loss={loss:.3f}) -> teszt leállítása a(z) {self.step}. lépésnél.")
-            self.model.stop_training = True
-
-    def get_optimal_lr(self, default_lr=2e-3):
-        if len(self.smoothed_losses) < 30:
-            return default_lr
-        # Levágjuk az első 10 és az utolsó 5 zajos lépést, és megkeressük a legmeredekebb esést
-        losses_arr = np.array(self.smoothed_losses[10:-5])
-        lrs_arr = np.array(self.lrs[10:-5])
-        gradients = np.gradient(losses_arr)
-        min_grad_idx = int(np.argmin(gradients))
-        optimal_lr = float(lrs_arr[min_grad_idx])
-        # Biztonsági korlát: [5e-4, 1e-2] közé szorítjuk
-        return float(np.clip(optimal_lr, 5e-4, 1e-2))
-
-    def plot_and_save(self, save_path, suggested_lr):
-        plt.figure(figsize=(10, 5))
-        plt.plot(self.lrs, self.smoothed_losses, label='Kisimított Loss', color='#2b5c8f', linewidth=2)
-        plt.axvline(suggested_lr, color='#d9534f', linestyle='--', linewidth=2,
-                    label=f'Ajánlott Warm-up LR: {suggested_lr:.2e}')
-        plt.xscale('log')
-        plt.xlabel('Tanulási ráta (Log skála)')
-        plt.ylabel('Költségérzékeny Loss')
-        plt.title('LR Finder eredménye (Legmeredekebb csökkenés)')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.show()
-        print(f"[LRFinder] Grafikon elmentve ide: {save_path}")
-
-# ---------------------------------------------------------
-# 5. TRANSFER LEARNING MODELL (ResNet50)
+# 4. TRANSFER LEARNING MODELL (ResNet50)
 # ---------------------------------------------------------
 def build_model(num_species=296):
     inputs = Input(shape=(224, 224, 3), dtype=tf.uint8, name="uint8_input")
@@ -288,7 +208,7 @@ def unfreeze_resnet_top(backbone, num_layers=30):
             layer.trainable = True
 
 # ---------------------------------------------------------
-# 6. FŐPROGRAM (LR Finder -> Warm-up -> Finomhangolás)
+# 5. FŐPROGRAM (Warm-up -> Finomhangolás)
 # ---------------------------------------------------------
 if __name__ == "__main__":
     print(f"Adatok betöltése innen: {DATA_DIR} | Képek innen: {IMAGE_DIR}")
@@ -326,41 +246,21 @@ if __name__ == "__main__":
         model = tf.keras.models.load_model(str(MODEL_PATH))
         backbone = model.get_layer('resnet50')
 
-        print(f"\n[!] Az LR Findert és az 1. FÁZIST (Warm-up) átugorjuk.")
+        print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk.")
         print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR=1e-4)...")
 
         unfreeze_resnet_top(backbone, num_layers=30)
         model.compile(optimizer=Adam(learning_rate=1e-4), **compile_kwargs)
         model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
 
-    # --- B) HA MÉG NINCS MODELL: LR FINDER + WARMUP + FINETUNE ---
+    # --- B) HA MÉG NINCS MODELL: WARMUP + FINETUNE ---
     else:
-        chosen_warmup_lr = DEFAULT_WARMUP_LR
-
-        # 0. LÉPÉS: LR Finder futtatása (200 lépésen = 25 600 képen)
-        if RUN_LR_FINDER:
-            print("\n=== 0. FÁZIS: LR Finder futtatása (200 lépés a legjobb Warm-up LR megtalálásához) ===")
-            temp_model, _ = build_model()
-            temp_model.compile(optimizer=Adam(learning_rate=1e-6), **compile_kwargs)
-
-            lr_finder = LRFinder(start_lr=1e-6, end_lr=1e-1, max_steps=200)
-            temp_model.fit(train_ds, epochs=1, steps_per_epoch=200, callbacks=[lr_finder], verbose=1)
-
-            chosen_warmup_lr = lr_finder.get_optimal_lr(default_lr=DEFAULT_WARMUP_LR)
-            print(f"\n[LRFinder] Megtalált optimális Warm-up LR: {chosen_warmup_lr:.2e}")
-            lr_finder.plot_and_save(PLOT_PATH, chosen_warmup_lr)
-
-            # Töröljük a tesztmodellt a memóriából, hogy tiszta súlyokkal induljon a valódi tanítás
-            del temp_model
-            tf.keras.backend.clear_session()
-
-        # Új, tiszta modell építése az éles tanításhoz
         model, backbone = build_model()
 
         # 1. FÁZIS: Fej bemelegítése (Warm-up) + CSV naplózás CSAK a Warm-uphoz
-        print(f"\n=== 1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={chosen_warmup_lr:.2e}) ===")
+        print(f"\n=== 1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={WARMUP_LR:.2e}) ===")
         warmup_optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=chosen_warmup_lr,
+            learning_rate=WARMUP_LR,
             weight_decay=1e-4,
             clipnorm=1.0
         )
