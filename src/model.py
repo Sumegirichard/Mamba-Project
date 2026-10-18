@@ -53,16 +53,68 @@ def create_dataset(csv_file, img_dir, batch_size):
 # ---------------------------------------------------------
 # 2. EGYEDI LOSS FÜGGVÉNY
 # ---------------------------------------------------------
-def weighted_venomous_loss(y_true, y_pred):
-    y_true = tf.cast(tf.reshape(y_true, [-1, 1]), tf.float32)
-    y_pred = tf.reshape(y_pred, [-1, 1])
+# ---------------------------------------------------------
+# 2. EGYEDI LOSS ÉS METRIKA FÜGGVÉNYEK
+# ---------------------------------------------------------
+
+# A 296 egyedi class_id növekvő sorrendjében a mérgesség (0 vagy 1)
+v_mapping = tf.constant([
+    0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0,
+    1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0
+], dtype=tf.int32)
+
+# A) A matematikai képlet a fajta (species) kiértékeléséhez (Metrika)
+def venomous_penalty_metric(y_true, y_pred):
+    y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+    y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
     
+    v_y = tf.gather(v_mapping, y_true_class)
+    v_y_hat = tf.gather(v_mapping, y_pred_class)
+    
+    penalty = tf.zeros_like(tf.cast(y_true_class, tf.float32))
+    not_equal = tf.not_equal(y_true_class, y_pred_class)
+    
+    cond_1 = tf.logical_and(tf.equal(v_y, 0), tf.equal(v_y_hat, 0))
+    penalty = tf.where(tf.logical_and(not_equal, cond_1), 1.0, penalty)
+    
+    cond_2 = tf.logical_and(tf.equal(v_y, 0), tf.equal(v_y_hat, 1))
+    penalty = tf.where(tf.logical_and(not_equal, cond_2), 2.0, penalty)
+    
+    cond_3 = tf.logical_and(tf.equal(v_y, 1), tf.equal(v_y_hat, 1))
+    penalty = tf.where(tf.logical_and(not_equal, cond_3), 2.0, penalty)
+    
+    cond_5 = tf.logical_and(tf.equal(v_y, 1), tf.equal(v_y_hat, 0))
+    penalty = tf.where(tf.logical_and(not_equal, cond_5), 5.0, penalty)
+    
+    return tf.reduce_mean(penalty)
+
+# B) Súlyozott veszteségfüggvény a fajta (species) TANÍTÁSÁHOZ
+def weighted_sparse_species_loss(y_true, y_pred):
+    y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+    v_y = tf.cast(tf.gather(v_mapping, y_true_class), tf.float32)
+    
+    # 5x-ös súly, ha a valódi fajta mérges
+    weights = tf.where(tf.equal(v_y, 1.0), 5.0, 1.0)
+    
+    # Sparse categorical crossentropy használata az indexek miatt
+    scce = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
+    return tf.reduce_mean(scce * weights)
+
+# C) A meglévő bináris loss a venomous_head-hez
+def weighted_binary_venomous_loss(y_true, y_pred):
+    y_true = tf.cast(y_true, tf.float32)
     weights = tf.where(tf.equal(y_true, 1.0), 5.0, 1.0)
-    
-    bce = tf.keras.backend.binary_crossentropy(y_true, y_pred)
-    bce = tf.reshape(bce, [-1, 1])
-    
-    return tf.reduce_mean(bce * weights)
+    bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+    return tf.reduce_mean(bce * tf.reshape(weights, [-1]))
 
 # ---------------------------------------------------------
 # 3. TRANSFER LEARNING MODELL (ResNet50)
@@ -106,15 +158,15 @@ if __name__ == "__main__":
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
         loss={
-            'species_head': 'sparse_categorical_crossentropy',
-            'venomous_head': weighted_venomous_loss
+            'species_head': weighted_sparse_species_loss,
+            'venomous_head': weighted_binary_venomous_loss
         },
         loss_weights={
             'species_head': 1.0,
             'venomous_head': 0.2
         },
         metrics={
-            'species_head': 'accuracy',
+            'species_head': ['accuracy', venomous_penalty_metric],
             'venomous_head': 'accuracy'
         }
     )
