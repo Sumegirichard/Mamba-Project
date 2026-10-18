@@ -256,3 +256,9 @@ group-alapu, observation_id szerinti split. A legfontosabb jelenlegi
 megbizhatosagi kockazat az elofeldolgozas es a modellfajl hasznalatanak
 elterese a tanitasi es predikcios kod kozott; ennek egysegesitese a
 kovetkezo technikai prioritas.
+
+Megpróbáltuk a warmup learning ratehoz megtalálni az optimális értéket. Először ezt kézzel próbáltuk állítgatni
+,de hamar rájöttünk hogy LR optimalizaloval ezt meg tudjuk tenni és a diagramró le tudjuk olvasni. Ezeket logoltuk is 
+és megvannak a diagramok is hozzá. Majd Dani csinált két diagramot ami összehasonlítja az optimalist a többivel.
+
+https://danielhanchen.github.io/optimizers/learning_rate_range_finder.htm <-- az LR finder ötlete innen jött
