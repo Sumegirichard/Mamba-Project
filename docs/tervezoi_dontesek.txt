@@ -1,0 +1,258 @@
+MAMBA-PROJECT - TERVEZESI DONTES
+===================================
+
+Dokumentum celja
+----------------
+Ez a dokumentum a Mamba-Project jelenlegi forraskodja, adatfajljai,
+README-je es a docs mappaban talalhato megjegyzes alapjan foglalja ossze
+a projekt fontosabb tervezoi donteseit. A dokumentum a jelenlegi allapotot
+rogziti; nem helyettesiti a futtathato konfiguraciot vagy az adatkeszitesi
+lepesek reszletes naplojat.
+
+Attekintett projektterulet
+--------------------------
+- src/merge.py: a kepmetaadatok es a mergegesi statusz osszekapcsolasa
+- src/train_test.py: tanito- es validacios halmaz eloallitasa
+- src/fix_labels.py: a fajazonositok ujraindexelese
+- src/checkimagepath.py: keputvonal-duplikaciok ellenorzese
+- src/letterboxing.py: a kepek meretezese es oldalarany-megorzese
+- src/model.py: adatbetoltes, augmentacio, multitask modell es tanitas
+- src/predict.py: egyedi kep predikcioja
+- src/visualization.py: EDA es eloszlasokat bemutato abrak
+- src/mamba.py: korabbi, egyszeru CNN modellprototipus
+- data/: metaadatok, split-ek, class mapping es predikcios pelda
+- models/: tanitott modellfajlok
+- plots/: generalt eloszlasabrak
+- docs/: feladatkiiras es projektmegjegyzesek
+
+1. A rendszer celja
+-------------------
+A projekt egy kepalapu kigyofelismero rendszert valosit meg. Egy bemeneti
+kepbol ket celvaltozot kell becsulni:
+
+1. a kigyofaj azonositasat 296 osztaly valamelyikevel;
+2. azt, hogy a kigyo mergezo-e (binaris, 0 vagy 1).
+
+A ket feladat egy kozos kepi jellemzoteret hasznal, de kulon kimeneti fejjel
+rendelkezik. Ezert a rendszer multitask klasszifikacios modellkent mukodik.
+
+2. Munkakörnyezet és Adat-összesítés
+Környezet beállítása: Létrehoztuk a GitHub repozitóriumot, és technikai nehézségekkel megküzdve beállítottuk a LiveShare kapcsolatot a közös munkához.
+Adatok egyesítése: A class_id oszlop mentén összekapcsoltuk (join/merge) a két .csv fájlt a könnyebb feldolgozhatóság érdekében. Ezzel előállt egy megfelelő struktúrájú, végleges adatkeret (merged_snake_metadata.csv), amelyben minden képhez (image_path) egyszerre elérhető mindkét elvárt célváltozó: a faj (class_id) és a mérgezőség (MIVS).
+A merge_metadata függvény left join-t használ class_id szerint, hogy minden képhez megmaradjon a képmetaadat, akkor is, ha a mérgezési adatforrás valamelyik sora hiányzik.
+Tervezési feltételezések:
+Az image_path egy képet azonosít.
+Az observation_id csoportosítási egység, ezért ugyanahhoz a megfigyeléshez tartozó képek nem kerülhetnek külön train és validation halmazba.
+A class_id és a binomial_name konzisztens fajazonosítást jelöl.
+A MIVS 0/1 célváltozó, ahol 1 a mérgező állapot.
+
+3. Adatminoseg es EDA
+---------------------
+A projekt kulon ellenorzi:
+- a teljes sorok duplikaciojat;
+- a hianyzo ertekeket;
+- az egyedi class_id es fajnev darabszamot;
+- az egy kepre eso sorok es image_path-ok egyediseget;
+- a fajonkenti es mergezesi statusz szerinti eloszlasokat.
+
+A checkimagepath.py az image_path duplikaciokat vizsgalja, mert ugyanazon kep
+train es validation oldalon valo megjelenese adat-szivargast okozna. A
+visualization.py a fontosabb eloszlasokat a plots/ mappaba menti, igy az
+osztaly- es celvaltozo-imbalance lathato a tanitas elott.
+
+4. Train/validation felosztas
+Az adatokat 80-20% arányban tanító (train) és validációs (val) halmazokra bontottuk. A train_test.py GroupShuffleSplit-et használ, a csoportosítás kulcsa az observation_id. Ez tudatos adat-szivárgás elleni döntés: egy megfigyeléshez kapcsolódó képek nem taníthatják és validálhatják egyszerre ugyanazt a vizuális mintát.
+
+A split lépés eredeti kimenete:
+-data/train_split.csv
+-data/val_split.csv
+
+5. Class ID ujraindexeles es TensorFlow kompatibilitas
+-------------------------
+Mivel a TensorFlow neurális hálózatok az osztályokat csak 0-tól N-1-ig terjedő,
+folytonos sorszámozással tudják értelmezni, létrehoztuk a javított (fixed végződésű) 
+fájlokat:
+-data/train_split_fixed.csv
+-data/val_split_fixed.csv
+
+Osztályok leképezése: Létrejött a class_id_mapping.csv fájl, 
+amely rögzíti az átalakítást: a bal oszlop tartalmazza a régi, 
+hiányos sorszámozású osztályneveket, a jobb oszlop pedig a modell 
+számára értelmezhető, új (0-tól induló) folytonos indexeket. Ez a 
+mapping a predikció utáni visszafejtéshez is szükséges, ezért 
+modell-artefaktumként kell kezelni.
+
+6. Kep-elokeszites
+------------------
+A letterboxing.py minden képet RGB-re alakít, 
+majd 224x224 méretre méretez. Az ImageOps.pad megőrzi 
+az eredeti oldalarányt, a szabad területet pedig szürke kitöltéssel 
+tölti ki. Ez a döntés csökkenti az aránytalan nyújtást, ami a kígyó 
+testformájának felismerését ronthatná.
+
+7. Modellarch
+
+7. Modellarchitektura
+---------------------
+A jelenlegi fo modell a model.py-ban definialt ResNet50-alapu transfer
+learning modell:
+
+- bemenet: 224x224x3 RGB kep;
+- beagyazott RandomFlip horizontal augmentacio;
+- beagyazott RandomRotation(0.15);
+- beagyazott RandomZoom(0.1);
+- ImageNet-en elotanított ResNet50 backbone;
+- GlobalAveragePooling2D;
+- 256 neuron os Dense reteg ReLU aktivacioval;
+- 0.3 dropout;
+- species_head: 296 osztalyos softmax;
+- venomous_head: egy neuron os sigmoid.
+
+A ResNet50 valasztasanak tervezesi indoka a transfer learning: az ImageNet
+sulyok altalanos vizualis jellemzoi kisebb sajat adathalmaz mellett is
+hasznalhato kiindulopontot adnak. A backbone teljesen tanithato, de az utolso
+20 reteg kivetelevel fagyasztva van. Ez kompromisszum a sajat feladathoz
+valo finomhangolas es a tulillesztes, illetve a szamitasi koltseg kozott.
+
+A korabbi, sajat CNN-prototipus a mamba.py-ban megmaradt kiserleti vagy
+osszehasonlitasi modellkent; a jelenlegi fo tanitasi folyamat nem ezt hasznalja.
+
+8. Multitask tanitas es vesztesegfuggvenyek
+-------------------------------------------
+A fajazonositas es a mergezesi statusz ugyanazon feature extractorbol indul,
+de kulon head kap. A ket feladat egyideju tanitasa elkeruli, hogy ket teljesen
+kulon modell legyen szukseges, mikozben a mergezesi informacio kulon,
+kozvetlenul optimalizalhato kimenet marad.
+
+A faj head sparse categorical crossentropy-t hasznal, mert a cimke egyetlen
+suru class index, nem one-hot vektor. A mergezo fajok 5-szoros sulyt kapnak.
+A venomous_head binaris crossentropy-je szinten 5-szorosan sulyozza a pozitiv
+osztalyt. A sulyozas celja, hogy a ritkabb vagy biztonsagi szempontbol
+fontosabb mergezo esetek hibai ne veszitsenek tul nagy jelentoseget.
+
+A loss_weights ertekei:
+- species_head: 1.0
+- venomous_head: 0.2
+
+Ez azt jelenti, hogy az elsodleges optimalizalasi cel a fajfelismeres, a
+mergezesi fej pedig kiegeszito feladatkent vesz reszt a teljes loss-ban.
+
+9. Egyedi fajfelismeresi mertek
+-------------------------------
+A venomous_penalty_metric a fajpredikciot a mergezesi kovetkezmeny szerint is
+ertekeli. A hibas fajazonositas buntetese nagyobb, ha:
+- nem mergezo faj helyett mergezo faj kerul becslesre;
+- mergezo faj helyett nem mergezo faj kerul becslesre.
+
+A legnagyobb buntetes a mergezo valos osztaly nem mergezo osztallyal valo
+felrecserelese. Ez domain-specifikus mertek, nem a standard accuracy
+helyett hasznalando altalanos pontossag. A v_mapping jelenleg a 296 uj
+class ID sorrendjehez kotott, ezert a mapping es a mappingbol szarmazo
+mergezesi cimkek egyutt kezelendo.
+
+Ez nyilván a feladatból adódva jött.
+
+10. Tanitasi futas
+------------------
+A jelenlegi beallitasok:
+- batch size: 32;
+- epoch: 10;
+- optimizer: Adam;
+- learning rate: 1e-4;
+- Dataset pipeline: map, shuffle, batch, prefetch;
+- shuffle buffer: 1000;
+- parhuzamos adatfeldolgozas: tf.data.AUTOTUNE;
+- GPU-n futtathato augmentacio es modell.
+
+A modell mentese a model.py szerint:
+models/snake_multitask_model.keras
+
+11. Predikcio tervezett kimenete
+--------------------------------
+A predict.py egy kepet olvas be, batch dimenziot ad hozza, majd a ket kimenetbol
+kiirja:
+- a becsult class ID-t;
+- a faj biztossagi szintjet;
+- a mergezo/nem mergezo dontest;
+- a mergezesi dontes biztossagat.
+
+A mergezesi kuszob jelenleg 0.5. A faj azonositoja a legnagyobb softmax
+valoszinusegu index, amelyet a class_id_mapping.csv segitsegevel a jovoben
+fajnevhez kell visszaforditani.
+
+12. Jelenlegi eltérések es dokumentalt technikai kockazatok
+------------------------------------------------------------
+Az alabbitokat a tovabbi fejlesztes elott rendezni kell:
+
+1. Tanitasi es predikcios elofeldolgozas elterese
+   A model.py letterboxolt, 0-255 tartomanyu kepet ad a ResNet50
+   preprocess_input fuggvenyenek. A predict.py ezzel szemben kozvetlenul
+   resize-ol, 0 es 1 koze osztja az ertekeket, es nem alkalmaz letterboxinget
+   vagy preprocess_input-ot. Ez train/inference skew-ot okozhat, es rontja a
+   predikcio megbizhatosagat. A ket folyamatnak ugyanazt a kozos
+   elofeldolgozasi fuggvenyt kell hasznalnia.
+
+2. Modellfajl-nev elterese
+   A model.py .keras kiterjesztesu fajlba ment, a predict.py viszont .h5
+   fajlt tolt be. A tanitas es a predikcio jelenleg nem garantaltan ugyanazt
+   a modellartefaktumot hasznalja.
+
+3. Split-fajlnevek elterese
+   A train_test.py train_split.csv es val_split.csv fajlokat ir, a model.py
+   viszont train_split_fixed.csv es val_split_fixed.csv fajlokat olvas.
+   A fix_class_ids futtatasa es annak sorrendje jelenleg implicit elofeltetel.
+
+4. Mapping visszafejtes hianya
+   A predict.py csak az uj, 0-295 kozotti class ID-t irja ki. A felhasznalo
+   szamara hasznos fajnevhez a class_id_mapping.csv es az eredeti
+   class_id/fajnev kapcsolat egyuttes betoltese szukseges.
+
+5. Hardcoded mergezesi mapping
+   A v_mapping 296 elemre es az aktualis class-sorrendre van kezzel beirva.
+   Biztonsagosabb megoldas lenne a mergezesi cimket a class_id mappingbol
+   vagy kulon verziozott artefaktumbol eloallitani, hogy az adatok
+   valtozasakor ne maradjon csendes inkonzisztencia.
+
+6. Kepnevek utkozesenek lehetosege
+   A letterboxing.py csak a fajlnevet hasznalja a kimeneti nev generalasakor.
+   Kulon almappak azonos fajlnevei felulirhatjak egymast. A bemeneti
+   image_path-struktura ellenorzese vagy egyedi kimeneti nevstrategia kell.
+
+7. Hibakezeles
+   A letterboxing.py feldolgozasi hiba utan kiirja a hibat es tovabblep.
+   A tanitasi folyamat elott erdemes ellenorizni, hogy nem maradt-e ki kep,
+   es minden CSV-ben hivatkozott fajl tenylegesen letezik.
+
+13. Reprodukcio es kovetkezo lepesek
+------------------------------------
+Javasolt, dokumentalt futatasi sorrend:
+
+1. EDA es keputvonal-ellenorzes a nyers/merged metaadaton.
+2. merge.py futtatasa, ha a merged CSV meg nem aktualis.
+3. train_test.py futtatasa az observation_id szerinti csoportos splithez.
+4. fix_labels.py futtatasa a 0-295 kozotti suru class ID-khoz.
+5. letterboxing.py futtatasa az elokeszitett kepek eloallitasahoz.
+6. model.py futtatasa a tanitashoz es a modell mentesehez.
+7. predikcio csak azzal az elofeldolgozassal, amely a tanitassal azonos.
+8. class_id_mapping.csv hasznalata a modellazonosito visszafejtesehez.
+
+A jovoben erdemes a kovetkezoket is rogziteni:
+- modell, mapping es elofeldolgozasi konfiguracio egyuttes verzioja;
+- accuracy mellett macro F1, recall es mergezo osztalyra vonatkozo recall;
+- kiserleti beallitasok es eredmenyek kulon naploja.
+
+"A transfer learninghez jelenleg ImageNet súlyokkal előtanított ResNet50 modellt használunk, 
+ami kiváló általános vizuális jellemzőket biztosít. Egy jövőbeli fejlesztési (továbbfejlesztési) 
+irány lehet egy iNaturalist adathalmazon előtanított modell integrálása. Mivel az iNat kifejezetten
+flóra és fauna adatokra épül, sokkal jobban
+támogatná a kígyók finomszemcsés (fine-grained) biológiai jegyeinek felismerését."
+
+Osszegzes
+---------
+A projekt fo tervezesi iranya egy ResNet50-re epulo, ketfeju multitask
+klasszifikator, amely a fajfelismerest es a mergezesi statuszt egy kozos
+kepi reprezentaciobol tanulja. A legfontosabb vedelmi dontes a
+group-alapu, observation_id szerinti split. A legfontosabb jelenlegi
+megbizhatosagi kockazat az elofeldolgozas es a modellfajl hasznalatanak
+elterese a tanitasi es predikcios kod kozott; ennek egysegesitese a
+kovetkezo technikai prioritas.

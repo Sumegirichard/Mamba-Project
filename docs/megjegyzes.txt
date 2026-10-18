@@ -1,8 +1,0 @@
-2026.10.11
-Git hub létrehozás plusz szarkodas a Liveshareval
-Viktor megcsinálta azt hogy joinolta a két .csv-t class_id mentén hoyg konnybe legyen dolgozni
-Ha ezt a két táblát összekapcsoljátok (join / merge) a class_id mentén, megkapjátok azt a végleges, 
-tökéletes struktúrájú adatkeretet, amelyben minden képhez (image_path) egyszerre elérhető 
-mindkét elvárt célváltozó: a faj (class_id) és a mérgezőség (MIVS).
-
-Megcsináltuk az EDA-t. (duplikatumok, hianyzo ertekek, stb)
