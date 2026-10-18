@@ -9,7 +9,10 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.optimizers import Adam
+from random_seed import set_global_seed
 
+
+set_global_seed(42)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # ---------------------------------------------------------
