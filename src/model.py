@@ -19,7 +19,8 @@ IMAGE_DIR = DATA_DIR / "train_images_224_letterboxed"
 MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.keras"
 
 BATCH_SIZE = 32
-EPOCHS = 10 
+WARMUP_EPOCHS = 3    # 1. fázis: csak az új fej bemelegítése
+FINETUNE_EPOCHS = 10 # 2. fázis: ResNet felső rétegeinek finomhangolása
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -30,34 +31,38 @@ def process_image(file_path, class_id, venomous):
     img = tf.io.read_file(file_path)
     img = tf.image.decode_jpeg(img, channels=3)
     img = tf.cast(img, tf.float32)
-    img = preprocess_input(img)
+    img.set_shape([224, 224, 3])
+    # FONTOS: A preprocess_input-ot kivettük innen, mert a modellen belül,
+    # a GPU-s augmentáció UTÁN kell lefutnia!
     return img, {'species_head': class_id, 'venomous_head': venomous}
 
-# Az augmentáció definíciója megmarad globálisan
 data_augmentation = tf.keras.Sequential([
     layers.RandomFlip("horizontal"),
-    layers.RandomRotation(0.15),
-    layers.RandomZoom(0.1),
-])
+    layers.RandomRotation(0.15, fill_mode="reflect"),
+    layers.RandomZoom(0.1, fill_mode="reflect"),
+], name="gpu_augmentation")
 
-# KIVETTÜK az is_training logikát, mert ezt most a modell maga kezeli a GPU-n
-def create_dataset(csv_file, img_dir, batch_size):
+def create_dataset(csv_file, img_dir, batch_size, is_training=True):
     df = pd.read_csv(csv_file)
     file_paths = [os.path.join(img_dir, str(p)) for p in df['image_path']]
     
-    ds = tf.data.Dataset.from_tensor_slices((file_paths, df['class_id'].values, df['MIVS'].values))
+    ds = tf.data.Dataset.from_tensor_slices((
+        file_paths,
+        df['class_id'].values.astype('int32'),
+        df['MIVS'].values.astype('float32')
+    ))
+    
+    if is_training:
+        # A fájlnév-listát keverjük meg a teljes adathalmazon (memóriabarát!)
+        ds = ds.shuffle(buffer_size=len(df), reshuffle_each_iteration=True)
+        
     ds = ds.map(process_image, num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.shuffle(buffer_size=1000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    ds = ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
     return ds
 
 # ---------------------------------------------------------
-# 2. EGYEDI LOSS FÜGGVÉNY
-# ---------------------------------------------------------
-# ---------------------------------------------------------
 # 2. EGYEDI LOSS ÉS METRIKA FÜGGVÉNYEK
 # ---------------------------------------------------------
-
-# A 296 egyedi class_id növekvő sorrendjében a mérgesség (0 vagy 1)
 v_mapping = tf.constant([
     0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0,
     1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
@@ -72,7 +77,10 @@ v_mapping = tf.constant([
     0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0
 ], dtype=tf.int32)
 
-# A) A matematikai képlet a fajta (species) kiértékeléséhez (Metrika)
+v_mapping_float = tf.cast(v_mapping, tf.float32)
+
+# A) Kiértékelési metrika (a jelenlegi kódodból)
+@tf.keras.saving.register_keras_serializable()
 def venomous_penalty_metric(y_true, y_pred):
     y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
@@ -97,19 +105,24 @@ def venomous_penalty_metric(y_true, y_pred):
     
     return tf.reduce_mean(penalty)
 
-# B) Súlyozott veszteségfüggvény a fajta (species) TANÍTÁSÁHOZ
-def weighted_sparse_species_loss(y_true, y_pred):
-    y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
-    v_y = tf.cast(tf.gather(v_mapping, y_true_class), tf.float32)
+# B) A prot3.txt-ből átemelt, 4-irányú költségérzékeny faj-loss!
+@tf.keras.saving.register_keras_serializable()
+def cost_sensitive_species_loss(y_true, y_pred):
+    y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+    v_y = tf.gather(v_mapping_float, y_true_int)
     
-    # 5x-ös súly, ha a valódi fajta mérges
-    weights = tf.where(tf.equal(v_y, 1.0), 5.0, 1.0)
+    # Mérges fajokra adott összegzett valószínűség
+    v_y_pred = tf.reduce_sum(y_pred * v_mapping_float, axis=-1)
     
-    # Sparse categorical crossentropy használata az indexek miatt
+    weight_if_venomous = 5.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
+    weight_if_non_venomous = 1.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
+    
+    weight = v_y * weight_if_venomous + (1.0 - v_y) * weight_if_non_venomous
     scce = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
-    return tf.reduce_mean(scce * weights)
+    return tf.reduce_mean(scce * weight)
 
-# C) A meglévő bináris loss a venomous_head-hez
+# C) Súlyozott bináris loss a venomous_head-hez (a jelenlegi kódodból)
+@tf.keras.saving.register_keras_serializable()
 def weighted_binary_venomous_loss(y_true, y_pred):
     y_true = tf.cast(y_true, tf.float32)
     weights = tf.where(tf.equal(y_true, 1.0), 5.0, 1.0)
@@ -122,62 +135,84 @@ def weighted_binary_venomous_loss(y_true, y_pred):
 def build_model(num_species=296):
     inputs = Input(shape=(224, 224, 3))
     
-    # 1. VÁLTOZÁS: Az augmentációs réteg ide kerül, így a GPU végzi a számítást
+    # 1. Augmentáció a GPU-n (még a [0, 255] RGB képen!)
     x = data_augmentation(inputs)
     
-    # 2. VÁLTOZÁS: A gerinc bemenete immár az augmentált tenzor (x) lesz
-    backbone = ResNet50(input_tensor=x, include_top=False, weights='imagenet')
+    # 2. ResNet50 preprocess_input az augmentáció UTÁN
+    x = layers.Lambda(preprocess_input, name="resnet_preprocess")(x)
     
-    backbone.trainable = True
-
-    for layer in backbone.layers[:-20]:
-        layer.trainable = False 
+    # 3. ResNet50 külön almodellként (kezdetben befagyasztva a Warm-uphoz)
+    backbone = ResNet50(include_top=False, weights='imagenet', input_shape=(224, 224, 3))
+    backbone.trainable = False
     
-    x = backbone.output
+    x = backbone(x, training=False)
     x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(256, activation='relu')(x)
+    
+    # 256 helyett 512 neuron, hogy ne legyen szűk keresztmetszet a 296 faj előtt
+    x = layers.Dense(512, activation='relu')(x)
     x = layers.Dropout(0.3)(x)
     
     species_out = layers.Dense(num_species, activation='softmax', name='species_head')(x)
     venomous_out = layers.Dense(1, activation='sigmoid', name='venomous_head')(x)
     
-    return models.Model(inputs=inputs, outputs=[species_out, venomous_out])
+    return models.Model(inputs=inputs, outputs=[species_out, venomous_out]), backbone
+
+def unfreeze_resnet_top(backbone, num_layers=30):
+    """Feloldja az utolsó N réteget, de a BatchNorm rétegeket befagyasztva tartja."""
+    backbone.trainable = True
+    for layer in backbone.layers[:-num_layers]:
+        layer.trainable = False
+    for layer in backbone.layers[-num_layers:]:
+        if isinstance(layer, layers.BatchNormalization):
+            layer.trainable = False
+        else:
+            layer.trainable = True
 
 # ---------------------------------------------------------
 # 4. FŐPROGRAM (Futtatás)
 # ---------------------------------------------------------
 if __name__ == "__main__":
     print("Adatok betöltése...")
+    train_ds = create_dataset(DATA_DIR / "train_split_fixed.csv", IMAGE_DIR, BATCH_SIZE, is_training=True)
+    val_ds = create_dataset(DATA_DIR / "val_split_fixed.csv", IMAGE_DIR, BATCH_SIZE, is_training=False)
     
-    # KIVETTÜK az is_training paramétereket a meghívásból
-    train_ds = create_dataset(DATA_DIR / "train_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
-    val_ds = create_dataset(DATA_DIR / "val_split_fixed.csv", IMAGE_DIR, BATCH_SIZE)
+    os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
+    model, backbone = build_model()
     
-    model = build_model()
+    # 1. FÁZIS: Fej bemelegítése (Warm-up)
+    print(f"\n1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, LR=1e-3)...")
+    model.compile(
+        optimizer=Adam(learning_rate=1e-3),
+        loss={'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
+        loss_weights={'species_head': 1.0, 'venomous_head': 0.2},
+        metrics={'species_head': ['accuracy', venomous_penalty_metric], 'venomous_head': 'accuracy'}
+    )
+    model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS)
     
+    # 2. FÁZIS: ResNet finomhangolás
+    print(f"\n2. FÁZIS: ResNet finomhangolása ({FINETUNE_EPOCHS} epoch, LR=1e-4)...")
+    unfreeze_resnet_top(backbone, num_layers=30)
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
-        loss={
-            'species_head': weighted_sparse_species_loss,
-            'venomous_head': weighted_binary_venomous_loss
-        },
-        loss_weights={
-            'species_head': 1.0,
-            'venomous_head': 0.2
-        },
-        metrics={
-            'species_head': ['accuracy', venomous_penalty_metric],
-            'venomous_head': 'accuracy'
-        }
+        loss={'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
+        loss_weights={'species_head': 1.0, 'venomous_head': 0.2},
+        metrics={'species_head': ['accuracy', venomous_penalty_metric], 'venomous_head': 'accuracy'}
     )
     
-    print(f"\nTanítás indítása (Epochs: {EPOCHS})...")
+    checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(MODEL_PATH),
+        monitor='val_species_head_venomous_penalty_metric',
+        mode='min',
+        save_best_only=True,
+        verbose=1
+    )
+    
     history = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=EPOCHS
+        epochs=WARMUP_EPOCHS + FINETUNE_EPOCHS,
+        initial_epoch=WARMUP_EPOCHS,
+        callbacks=[checkpoint_cb]
     )
     
-    os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
-    model.save(str(MODEL_PATH))
-    print("\nTanítás befejeződött, modell elmentve ide:", MODEL_PATH)
+    print("\nTanítás befejeződött, a legjobb büntetésű modell elmentve ide:", MODEL_PATH)
