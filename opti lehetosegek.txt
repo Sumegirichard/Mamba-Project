@@ -1,0 +1,39 @@
+1. Adatebővítés (Data Augmentation) – "Ingyen adat"
+Jelenleg a gép minden képet pontosan úgy lát, ahogy lefotózták. Ha egy kígyó mindig balra néz a képeken, a gép megzavarodik, ha a tesztképen jobbra néz. Az adatebővítés azt jelenti, hogy a betöltés pillanatában a gép véletlenszerűen megforgatja, tükrözi, vagy picit belenagyít a képbe. Ezzel a 66 000 képed a gép szemében hirtelen több millió különböző képpé válik!
+
+Hogyan? A build_model függvénybe, közvetlenül a bemenet (Input) után betehetsz beépített módosítókat:
+
+Python
+inputs = Input(shape=(224, 224, 3))
+x = layers.RandomFlip("horizontal")(inputs) # Véletlenszerű tükrözés
+x = layers.RandomRotation(0.1)(x)           # Enyhe, max 10%-os forgatás
+x = layers.RandomZoom(0.1)(x)               # Véletlenszerű ráközelítés
+backbone = EfficientNetB2(input_tensor=x, ...) # A módosított képet kapja a gerinc
+2. Kétlépcsős tanítás (Fine-Tuning)
+Jelenleg a gerincet "befagyasztottuk" (backbone.trainable = False), hogy a ti új fejeitek gyorsan megtanulják az alapokat. Ha a fejek már jók (pl. 10 Epoch után), jöhet a mesterfogás:
+
+Feloldjuk a fagyasztást, de beállítunk egy nagyon-nagyon pici tanulási rátát (Learning Rate, pl. 0.00001), és így futtatunk még 5-10 Epochot.
+
+Így az EfficientNet Google által tanult "agysejtjei" elkezdenek picit elmozdulni a kutyáktól/autóktól, és hajszálpontosan ráhangolódnak a kígyópikkelyekre. Ez önmagában +5-10% pontosságot szokott hozni.
+
+3. Dinamikus tanulási ráta (ReduceLROnPlateau)
+Ha a gép fix sebességgel tanul, egy idő után "túllép" a tökéletes megoldáson. Olyan ez, mint amikor golfozni tanulsz: a lyukhoz közeledve már nem szabad akkorát ütni, mint a legelején.
+
+A callbacks listába be lehet tenni a ReduceLROnPlateau-t, ami automatikusan tizedére csökkenti a tanulás sebességét, ha azt látja, hogy 2 Epoch óta nem javult a pontosság. Ez segíti a modellt abban, hogy rátaláljon a milliméterpontos megoldásra.
+
+4. Osztály-súlyozás (Class Weights)
+Szinte biztos, hogy a 296 fajból van olyan (pl. a kockás sikló), amiről 1000 képed van, és van olyan ritka vipera, amiről csak 30. A modell hajlamos lesz a ritka kígyókat ignorálni, mert a gyakoriakra fókuszálva is jó pontot kap.
+
+A TensorFlow-ban ki lehet számolni a súlyokat, és a model.fit()-nek átadni a class_weight paramétert. Így a gép megtanulja, hogy egy ritka faj eltévesztéséért 30-szor akkora "büntetés" jár, mint egy gyakoriért. (A mérgezőség fejnél az 5.0-ás szorzóval ezt már zseniálisan elkezdtétek!)
+
+Hány százalékos pontosságot (Accuracy) lehet elérni?
+Egy 296 kategóriás, finomszemcsés (fine-grained) osztályozási feladat brutálisan nehéz. (Gondolj bele: az átlagember 5 kígyófajt sem tud megkülönböztetni). Az elvárásokat eszerint kell beállítani:
+
+1. Faj felismerése (Species Head):
+
+Top-1 Accuracy (A legelső tippje telitalálat): A fenti 4 optimalizációval a 75% - 85% közötti eredmény már abszolút professzionális, ipari szintű (State-of-the-Art közeli) teljesítménynek számít.
+
+Top-5 Accuracy (A helyes kígyó benne van a gép első 5 tippjében): Ez az igazi mérőfoka az ilyen modelleknek! Itt 92% - 97% körüli eredményt várhatsz. (Ezért szoktak az applikációk 3-5 lehetséges fajt feldobni a felhasználónak).
+
+2. Mérgezőség felismerése (Venomous Head):
+Mivel ez "csak" egy kétesélyes (Bináris) feladat (Igen/Nem), és az EfficientNet nagyon hamar észreveszi a viperafélék jellegzetes pikkelyeit vagy a fejformát, itt sokkal magasabb, stabil 90% - 95% közötti pontosság a reális elvárás.
