@@ -4,13 +4,15 @@ import zipfile
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.optimizers import Adam
-from random_seed import set_global_seed
+# from random_seed import set_global_seed
 
-set_global_seed(42)
+# set_global_seed(42)
+tf.random.set_seed(42)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # ---------------------------------------------------------
@@ -37,37 +39,60 @@ except ImportError:
 if IN_COLAB:
     drive.mount('/content/drive')
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
-    ZIP_PATH = DRIVE_DIR / 'train_images_224_letterboxed.zip'
-    EXTRACT_PATH = Path('/content/train_images_224_letterboxed')
+    
+    # Útvonalak a Drive mappaszerkezet alapján
+    ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_224_letterboxed.zip'
+    EXTRACT_PATH = Path('/content/Databank/Train data')
+    CSV_SOURCE_DIR = DRIVE_DIR / 'CSV files'
+    LOGS_DIR = DRIVE_DIR / 'Logs'
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not EXTRACT_PATH.exists() and ZIP_PATH.exists():
-        print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
-        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
-            zip_ref.extractall(EXTRACT_PATH)
-        print("Kicsomagolás kész!")
+    # Kicsomagolás a helyi SSD-re a gyorsaságért
+    if ZIP_PATH.exists():
+        if not (EXTRACT_PATH / "train_images_224_letterboxed").exists():
+            print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
+            EXTRACT_PATH.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+                zip_ref.extractall(EXTRACT_PATH)
+            print("Kicsomagolás kész!")
+        else:
+            print("A képek már ki vannak csomagolva a helyi SSD-re.")
+    else:
+        print(f"FIGYELEM: A ZIP fájl nem található a Drive-on: {ZIP_PATH}")
 
-    LOCAL_DATA_DIR = Path('/content/data_local')
+    # CSV fájlok gyorsítótárazása
+    LOCAL_DATA_DIR = Path('/content/data_local/CSV files')
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
     for csv_name in ["train_split_fixed.csv", "val_split_fixed.csv"]:
-        src_csv = DRIVE_DIR / csv_name
+        src_csv = CSV_SOURCE_DIR / csv_name
         dst_csv = LOCAL_DATA_DIR / csv_name
         if src_csv.exists() and not dst_csv.exists():
             shutil.copy2(src_csv, dst_csv)
 
-    DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / "train_split_fixed.csv").exists() else DRIVE_DIR
-    nested_dir = EXTRACT_PATH / "train_images_224_letterboxed"
-    IMAGE_DIR = nested_dir if nested_dir.exists() else EXTRACT_PATH
+    DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / "train_split_fixed.csv").exists() else CSV_SOURCE_DIR
+    
+    if (EXTRACT_PATH / "train_images_224_letterboxed").exists():
+        IMAGE_DIR = EXTRACT_PATH / "train_images_224_letterboxed"
+    else:
+        IMAGE_DIR = EXTRACT_PATH
+    
+    # ÚTVONALAK A MODELLEKNEK ÉS A LOGOKNAK
     MODEL_PATH = DRIVE_DIR / "snake_multitask_model.keras"
+    WARMUP_MODEL_PATH = DRIVE_DIR / "snake_multitask_warmup.keras"
     WARMUP_LOG_PATH = DRIVE_DIR / "warmup_log.csv"
+    LOSS_PLOT_PATH = LOGS_DIR / "training_loss_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
     except NameError:
         PROJECT_ROOT = Path().resolve().parents[1]
-    DATA_DIR = PROJECT_ROOT / "data"
-    IMAGE_DIR = DATA_DIR / "train_images_224_letterboxed"
+    DATA_DIR = PROJECT_ROOT / "data" / "CSV files"
+    IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
     MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.keras"
+    WARMUP_MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_warmup.keras"
     WARMUP_LOG_PATH = PROJECT_ROOT / "models" / "warmup_log.csv"
+    LOSS_PLOT_PATH = PROJECT_ROOT / "models" / "training_loss_plot.png"
     os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
 # Hiperparaméterek
@@ -78,7 +103,7 @@ WARMUP_LR = 5e-4
 FINETUNE_LR = 1.5e-4
 
 # ---------------------------------------------------------
-# 2. GYORS ADATBETÖLTŐ PIPELINE (uint8 + INTEGER_FAST)
+# 2. GYORS ADATBETÖLTŐ PIPELINE
 # ---------------------------------------------------------
 def process_image(file_path, class_id, venomous):
     img = tf.io.read_file(file_path)
@@ -142,10 +167,8 @@ v_mapping_float = tf.cast(v_mapping, tf.float32)
 def venomous_penalty_metric(y_true, y_pred):
     y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-
     v_y = tf.gather(v_mapping_float, y_true_class)
     v_y_hat = tf.gather(v_mapping_float, y_pred_class)
-
     base_penalty = 1.0 + 4.0 * v_y + (1.0 - 4.0 * v_y) * v_y_hat
     is_wrong = tf.cast(tf.not_equal(y_true_class, y_pred_class), tf.float32)
     return tf.reduce_mean(base_penalty * is_wrong)
@@ -155,12 +178,9 @@ def cost_sensitive_species_loss(y_true, y_pred):
     y_pred = tf.cast(y_pred, tf.float32)
     y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     v_y = tf.gather(v_mapping_float, y_true_int)
-
     v_y_pred = tf.reduce_sum(y_pred * v_mapping_float, axis=-1)
-
     weight_if_venomous = 5.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
     weight_if_non_venomous = 1.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
-
     weight = v_y * weight_if_venomous + (1.0 - v_y) * weight_if_non_venomous
     scce = tf.keras.losses.sparse_categorical_crossentropy(y_true_int, y_pred)
     return tf.reduce_mean(scce * weight)
@@ -178,7 +198,7 @@ def resnet_preprocess_fn(x):
     return preprocess_input(tf.cast(x, tf.float32))
 
 # ---------------------------------------------------------
-# 4. TRANSFER LEARNING MODELL (ResNet50)
+# 4. TRANSFER LEARNING MODELL ÉS GRAFIKON
 # ---------------------------------------------------------
 def build_model(num_species=296):
     inputs = Input(shape=(224, 224, 3), dtype=tf.uint8, name="uint8_input")
@@ -208,6 +228,19 @@ def unfreeze_resnet_top(backbone, num_layers=30):
             layer.trainable = False
         else:
             layer.trainable = True
+
+def plot_training_history(history, save_path):
+    plt.figure(figsize=(10, 6))
+    plt.plot(history.history['loss'], label='Tanítási Loss', color='blue', linewidth=2)
+    plt.plot(history.history['val_loss'], label='Validációs Loss', color='orange', linewidth=2)
+    plt.title('Modell Költségfüggvény (Loss) Változása az Epochok Során', fontsize=14)
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Teljes Loss', fontsize=12)
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    print(f"\n[+] A Loss grafikon sikeresen elmentve ide: {save_path}")
 
 # ---------------------------------------------------------
 # 5. FŐPROGRAM (Warm-up -> Finomhangolás)
@@ -242,44 +275,53 @@ if __name__ == "__main__":
         )
     ]
 
-    # --- A) HA MÁR VAN ELMENTETT MODELL: FOLYTATÁS ---
+    history = None
+
+    # --- A) HA MÁR VAN ELMENTETT FINOMHANGOLT MODELL: FOLYTATÁS ---
     if MODEL_PATH.exists():
         print(f"\n[+] Meglévő modell betöltése innen: {MODEL_PATH}")
         model = tf.keras.models.load_model(str(MODEL_PATH))
         backbone = model.get_layer('resnet50')
 
         print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk.")
-        print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR=1e-4)...")
+        print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={FINETUNE_LR:.2e})...")
 
         unfreeze_resnet_top(backbone, num_layers=30)
-        model.compile(optimizer=Adam(learning_rate=1e-4), **compile_kwargs)
-        model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
+        model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
+        history = model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
 
-    # --- B) HA MÉG NINCS MODELL: WARMUP + FINETUNE ---
+    # --- B) HA MÉG NINCS FINOMHANGOLT MODELL ---
     else:
-        model, backbone = build_model()
+        if WARMUP_MODEL_PATH.exists():
+            print(f"\n[+] Bemelegített (Warm-up) modell betöltése innen: {WARMUP_MODEL_PATH}")
+            model = tf.keras.models.load_model(str(WARMUP_MODEL_PATH))
+            backbone = model.get_layer('resnet50')
+            print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk, mert már elkészült.")
+            
+        else:
+            model, backbone = build_model()
+            print(f"\n=== 1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={WARMUP_LR:.2e}) ===")
+            warmup_optimizer = tf.keras.optimizers.AdamW(
+                learning_rate=WARMUP_LR,
+                weight_decay=1e-4,
+                clipnorm=1.0
+            )
+            model.compile(optimizer=warmup_optimizer, **compile_kwargs)
 
-        # 1. FÁZIS: Fej bemelegítése (Warm-up) + CSV naplózás CSAK a Warm-uphoz
-        print(f"\n=== 1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={WARMUP_LR:.2e}) ===")
-        warmup_optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=WARMUP_LR,
-            weight_decay=1e-4,
-            clipnorm=1.0
-        )
-        model.compile(optimizer=warmup_optimizer, **compile_kwargs)
+            warmup_callbacks = [
+                tf.keras.callbacks.CSVLogger(filename=str(WARMUP_LOG_PATH), separator=',', append=True)
+            ]
+            model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
+            
+            model.save(str(WARMUP_MODEL_PATH))
+            print(f"Warm-up modell sikeresen elmentve ide: {WARMUP_MODEL_PATH}")
+            print(f"Warm-up log elmentve ide: {WARMUP_LOG_PATH}")
 
-        warmup_callbacks = [
-            tf.keras.callbacks.CSVLogger(filename=str(WARMUP_LOG_PATH), separator=',', append=True)
-        ]
-        model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
-        print(f"Warm-up log elmentve ide: {WARMUP_LOG_PATH}")
-
-        # 2. FÁZIS: ResNet felső 30 rétegének finomhangolása
         print(f"\n=== 2. FÁZIS: ResNet finomhangolása ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={FINETUNE_LR:.2e}) ===")
         unfreeze_resnet_top(backbone, num_layers=30)
         model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
 
-        model.fit(
+        history = model.fit(
             train_ds,
             validation_data=val_ds,
             epochs=WARMUP_EPOCHS + FINETUNE_EPOCHS,
@@ -288,3 +330,6 @@ if __name__ == "__main__":
         )
 
     print("\nTanítás befejeződött, a legjobb büntetésű modell elmentve ide:", MODEL_PATH)
+
+    if history is not None:
+        plot_training_history(history, str(LOSS_PLOT_PATH))
