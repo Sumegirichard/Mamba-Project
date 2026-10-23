@@ -1,0 +1,4 @@
+keresztvalidáció nagyon költséges -> k = 2-re váltás, és lr finderek ujrafuttatása
+medium képeken tanítás
+inaturalist kiprobalasa
+

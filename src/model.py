@@ -285,6 +285,7 @@ if __name__ == "__main__":
                 factor=0.3,
                 patience=2,
                 min_lr=1e-6,
+                min_delta=1e-3,
                 verbose=1
             ),
             tf.keras.callbacks.EarlyStopping(
@@ -292,6 +293,7 @@ if __name__ == "__main__":
                 mode='min',
                 patience=5,
                 restore_best_weights=True,
+                min_delta=1e-3,
                 verbose=1
             ),
             tf.keras.callbacks.CSVLogger(filename=str(fold_finetune_log), separator=',', append=True)
