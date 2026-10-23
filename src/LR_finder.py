@@ -9,10 +9,9 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.optimizers import Adam
-from random_seed import set_global_seed
 
-
-set_global_seed(42)
+# set_global_seed(41) # Ha van saját seed függvényed, kommentezd ki
+tf.random.set_seed(41)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # ---------------------------------------------------------
@@ -38,35 +37,54 @@ except ImportError:
 
 if IN_COLAB:
     drive.mount('/content/drive')
-    DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
-    ZIP_PATH = DRIVE_DIR / 'train_images_224_letterboxed.zip'
-    EXTRACT_PATH = Path('/content/train_images_224_letterboxed')
+    DRIVE_DIR = Path('/content/drive/MyDrive/Mamba/')
+    
+    # Kép ZIP és CSV fájlok elérési útjai a képi struktúra alapján
+    ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_224_letterboxed.zip'
+    EXTRACT_PATH = Path('/content/Databank/Train data')
+    CSV_SOURCE_DIR = DRIVE_DIR / 'CSV files'
+    LOGS_DIR = DRIVE_DIR / 'Logs'
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not EXTRACT_PATH.exists() and ZIP_PATH.exists():
-        print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
-        with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
-            zip_ref.extractall(EXTRACT_PATH)
-        print("Kicsomagolás kész!")
+    # Kicsomagolás végrehajtása ha még nem létezik a célmappa
+    if ZIP_PATH.exists():
+        if not (EXTRACT_PATH / "train_images_224_letterboxed").exists():
+            print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
+            EXTRACT_PATH.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+                zip_ref.extractall(EXTRACT_PATH)
+            print("Kicsomagolás kész!")
+        else:
+            print("A képek már ki vannak csomagolva a helyi SSD-re.")
+    else:
+        print(f"FIGYELEM: A ZIP fájl nem található a Drive-on: {ZIP_PATH}")
 
-    LOCAL_DATA_DIR = Path('/content/data_local')
+    LOCAL_DATA_DIR = Path('/content/data_local/CSV files')
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # CSV fájlok másolása a "CSV files" mappából
     for csv_name in ["train_split_fixed.csv", "val_split_fixed.csv"]:
-        src_csv = DRIVE_DIR / csv_name
+        src_csv = CSV_SOURCE_DIR / csv_name
         dst_csv = LOCAL_DATA_DIR / csv_name
         if src_csv.exists() and not dst_csv.exists():
             shutil.copy2(src_csv, dst_csv)
 
-    DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / "train_split_fixed.csv").exists() else DRIVE_DIR
-    nested_dir = EXTRACT_PATH / "train_images_224_letterboxed"
-    IMAGE_DIR = nested_dir if nested_dir.exists() else EXTRACT_PATH
-    PLOT_PATH = DRIVE_DIR / "lr_finder_plot.png"
+    DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / "train_split_fixed.csv").exists() else CSV_SOURCE_DIR
+    
+    # Mindig a helyi kicsomagolt mappát preferáljuk Colab alatt a sebességért
+    if (EXTRACT_PATH / "train_images_224_letterboxed").exists():
+        IMAGE_DIR = EXTRACT_PATH / "train_images_224_letterboxed"
+    else:
+        IMAGE_DIR = EXTRACT_PATH
+        
+    PLOT_PATH = LOGS_DIR / "lr_finder_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
     except NameError:
         PROJECT_ROOT = Path().resolve().parents[1]
-    DATA_DIR = PROJECT_ROOT / "data"
-    IMAGE_DIR = DATA_DIR / "train_images_224_letterboxed"
+    DATA_DIR = PROJECT_ROOT / "data" / "CSV files"
+    IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
     PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_plot.png"
     os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
@@ -92,7 +110,7 @@ data_augmentation = tf.keras.Sequential([
 def create_dataset(csv_file, img_dir, batch_size, is_training=True):
     df = pd.read_csv(csv_file)
     img_dir_str = str(img_dir)
-    file_paths = [os.path.join(img_dir_str, str(p)) for p in df['image_path']]
+    file_paths = [os.path.join(img_dir_str, os.path.basename(p)) for p in df['image_path']]
 
     ds = tf.data.Dataset.from_tensor_slices((
         file_paths,
@@ -191,7 +209,6 @@ class LRFinder(tf.keras.callbacks.Callback):
         self.step = 0
 
     def _set_lr(self, lr):
-        # Kompatibilis mind a régebbi TF 2.x, mind az új Keras 3 optimalizálókkal
         if hasattr(self.model.optimizer, 'learning_rate'):
             self.model.optimizer.learning_rate.assign(lr)
         else:
@@ -217,7 +234,6 @@ class LRFinder(tf.keras.callbacks.Callback):
 
         self.step += 1
 
-        # Ha a hiba felrobban (4x nagyobb, mint az eddigi legjobb), azonnal leállítjuk a tesztet
         if self.step > 20 and (np.isnan(loss) or smooth > 4.0 * self.best_loss):
             print(f"\n[LRFinder] Hiba kilőtt (loss={loss:.3f}) -> teszt leállítása a(z) {self.step}. lépésnél.")
             self.model.stop_training = True
@@ -225,13 +241,11 @@ class LRFinder(tf.keras.callbacks.Callback):
     def get_optimal_lr(self, default_lr=2e-3):
         if len(self.smoothed_losses) < 30:
             return default_lr
-        # Levágjuk az első 10 és az utolsó 5 zajos lépést, és megkeressük a legmeredekebb esést
         losses_arr = np.array(self.smoothed_losses[10:-5])
         lrs_arr = np.array(self.lrs[10:-5])
         gradients = np.gradient(losses_arr)
         min_grad_idx = int(np.argmin(gradients))
         optimal_lr = float(lrs_arr[min_grad_idx])
-        # Biztonsági korlát: [5e-4, 1e-2] közé szorítjuk
         return float(np.clip(optimal_lr, 5e-4, 1e-2))
 
     def plot_and_save(self, save_path, suggested_lr):
