@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import zipfile
 from pathlib import Path
@@ -9,10 +10,8 @@ import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
 from tensorflow.keras.optimizers import Adam
-# from random_seed import set_global_seed
 
-# set_global_seed(42)
-tf.random.set_seed(42)
+# tf.random.set_seed(42)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # ---------------------------------------------------------
@@ -39,11 +38,9 @@ except ImportError:
 if IN_COLAB:
     drive.mount('/content/drive')
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
-    
     ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_224_letterboxed.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
     
-    # Új útvonal a foldokhoz a kép alapján
     FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / 'folds'
     LOGS_DIR = DRIVE_DIR / 'Logs'
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,28 +52,25 @@ if IN_COLAB:
             with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
                 zip_ref.extractall(EXTRACT_PATH)
             print("Kicsomagolás kész!")
-    else:
-        print(f"FIGYELEM: A ZIP fájl nem található a Drive-on: {ZIP_PATH}")
 
-    # Fold CSV-k másolása a helyi meghajtóra a sebességért
     LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
     LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     
-    if FOLDS_SOURCE_DIR.exists():
-        for i in range(1, 6):
-            for split in ['train', 'val']:
-                file_name = f"fold_{i}_{split}.csv"
-                src_csv = FOLDS_SOURCE_DIR / file_name
-                dst_csv = LOCAL_FOLDS_DIR / file_name
-                if src_csv.exists() and not dst_csv.exists():
-                    shutil.copy2(src_csv, dst_csv)
-    
-    DATA_DIR = LOCAL_FOLDS_DIR if (LOCAL_FOLDS_DIR / "fold_1_train.csv").exists() else FOLDS_SOURCE_DIR
+    # Elegendő a Fold 1-et használni az LR teszthez
+    src_csv = FOLDS_SOURCE_DIR / "fold_1_train.csv"
+    dst_csv = LOCAL_FOLDS_DIR / "fold_1_train.csv"
+    if src_csv.exists() and not dst_csv.exists():
+        shutil.copy2(src_csv, dst_csv)
+
+    DATA_DIR = LOCAL_FOLDS_DIR if dst_csv.exists() else FOLDS_SOURCE_DIR
     
     if (EXTRACT_PATH / "train_images_224_letterboxed").exists():
         IMAGE_DIR = EXTRACT_PATH / "train_images_224_letterboxed"
     else:
         IMAGE_DIR = EXTRACT_PATH
+        
+    WARMUP_MODEL_PATH = DRIVE_DIR / "snake_multitask_warmup_fold_1.keras"
+    PLOT_PATH = LOGS_DIR / "lr_finder_backbone_fold_1_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -84,20 +78,16 @@ else:
         PROJECT_ROOT = Path().resolve().parents[1]
     DATA_DIR = PROJECT_ROOT / "data" / "CSV files" / "folds"
     IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
-    LOGS_DIR = PROJECT_ROOT / "models"
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    DRIVE_DIR = PROJECT_ROOT / "models"
+    WARMUP_MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_warmup_fold_1.keras"
+    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_backbone_fold_1_plot.png"
+    os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
 # Hiperparaméterek
 BATCH_SIZE = 128
-WARMUP_EPOCHS = 10 
-FINETUNE_EPOCHS = 30
-WARMUP_LR = 5e-4
-FINETUNE_LR = 1.5e-4
-NUM_FOLDS = 5
+DEFAULT_FINETUNE_LR = 1.5e-4
 
 # ---------------------------------------------------------
-# 2. GYORS ADATBETÖLTŐ PIPELINE
+# 2. GYORS ADATBETÖLTŐ PIPELINE (uint8 + INTEGER_FAST)
 # ---------------------------------------------------------
 def process_image(file_path, class_id, venomous):
     img = tf.io.read_file(file_path)
@@ -130,10 +120,6 @@ def create_dataset(csv_file, img_dir, batch_size, is_training=True):
         ds = ds.shuffle(buffer_size=len(df), reshuffle_each_iteration=True)
 
     ds = ds.map(process_image, num_parallel_calls=tf.data.AUTOTUNE)
-
-    if not is_training:
-        ds = ds.cache()
-
     ds = ds.batch(batch_size, drop_remainder=is_training)
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
@@ -161,8 +147,10 @@ v_mapping_float = tf.cast(v_mapping, tf.float32)
 def venomous_penalty_metric(y_true, y_pred):
     y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
+
     v_y = tf.gather(v_mapping_float, y_true_class)
     v_y_hat = tf.gather(v_mapping_float, y_pred_class)
+
     base_penalty = 1.0 + 4.0 * v_y + (1.0 - 4.0 * v_y) * v_y_hat
     is_wrong = tf.cast(tf.not_equal(y_true_class, y_pred_class), tf.float32)
     return tf.reduce_mean(base_penalty * is_wrong)
@@ -172,9 +160,12 @@ def cost_sensitive_species_loss(y_true, y_pred):
     y_pred = tf.cast(y_pred, tf.float32)
     y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     v_y = tf.gather(v_mapping_float, y_true_int)
+
     v_y_pred = tf.reduce_sum(y_pred * v_mapping_float, axis=-1)
+
     weight_if_venomous = 5.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
     weight_if_non_venomous = 1.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
+
     weight = v_y * weight_if_venomous + (1.0 - v_y) * weight_if_non_venomous
     scce = tf.keras.losses.sparse_categorical_crossentropy(y_true_int, y_pred)
     return tf.reduce_mean(scce * weight)
@@ -187,32 +178,81 @@ def weighted_binary_venomous_loss(y_true, y_pred):
     bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
     return tf.reduce_mean(bce * weights)
 
-@register_serializable()
-def resnet_preprocess_fn(x):
-    return preprocess_input(tf.cast(x, tf.float32))
+# ---------------------------------------------------------
+# 4. AUTOMATIKUS LEARNING RATE FINDER (BACKBONE-RA HANGOLVA)
+# ---------------------------------------------------------
+class LRFinder(tf.keras.callbacks.Callback):
+    def __init__(self, start_lr=1e-7, end_lr=1e-2, max_steps=200):
+        super().__init__()
+        self.start_lr = start_lr
+        self.end_lr = end_lr
+        self.max_steps = max_steps
+        self.factor = (end_lr / start_lr) ** (1.0 / max_steps)
+        self.lrs = []
+        self.losses = []
+        self.smoothed_losses = []
+        self.best_loss = float('inf')
+        self.step = 0
+
+    def _set_lr(self, lr):
+        if hasattr(self.model.optimizer, 'learning_rate'):
+            self.model.optimizer.learning_rate.assign(lr)
+        else:
+            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+
+    def on_train_batch_begin(self, batch, logs=None):
+        lr = self.start_lr * (self.factor ** self.step)
+        self._set_lr(lr)
+        self.lrs.append(lr)
+
+    def on_train_batch_end(self, batch, logs=None):
+        loss = float(logs.get('loss', 0.0))
+        self.losses.append(loss)
+
+        if self.step == 0:
+            smooth = loss
+        else:
+            smooth = 0.85 * self.smoothed_losses[-1] + 0.15 * loss
+        self.smoothed_losses.append(smooth)
+
+        if smooth < self.best_loss:
+            self.best_loss = smooth
+
+        self.step += 1
+
+        if self.step > 20 and (np.isnan(loss) or smooth > 3.0 * self.best_loss):
+            print(f"\n[LRFinder] Hiba kilőtt (loss={loss:.3f}) -> teszt leállítása a(z) {self.step}. lépésnél.")
+            self.model.stop_training = True
+
+    def get_optimal_lr(self, default_lr=1.5e-4):
+        if len(self.smoothed_losses) < 30:
+            return default_lr
+        losses_arr = np.array(self.smoothed_losses[10:-5])
+        lrs_arr = np.array(self.lrs[10:-5])
+        gradients = np.gradient(losses_arr)
+        min_grad_idx = int(np.argmin(gradients))
+        optimal_lr = float(lrs_arr[min_grad_idx])
+        return float(np.clip(optimal_lr, 1e-6, 1e-3))
+
+    def plot_and_save(self, save_path, suggested_lr):
+        plt.figure(figsize=(10, 5))
+        plt.plot(self.lrs, self.smoothed_losses, label='Kisimított Loss', color='#2b5c8f', linewidth=2)
+        plt.axvline(suggested_lr, color='#d9534f', linestyle='--', linewidth=2,
+                    label=f'Ajánlott Backbone LR: {suggested_lr:.2e}')
+        plt.xscale('log')
+        plt.xlabel('Tanulási ráta (Log skála)')
+        plt.ylabel('Költségérzékeny Loss')
+        plt.title('LR Finder eredménye (Backbone finomhangolás - Fold 1)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.show()
+        print(f"[LRFinder] Grafikon elmentve ide: {save_path}")
 
 # ---------------------------------------------------------
-# 4. TRANSFER LEARNING MODELL ÉS GRAFIKON
+# 5. BACKBONE KIOLVASZTÁSA
 # ---------------------------------------------------------
-def build_model(num_species=296):
-    inputs = Input(shape=(224, 224, 3), dtype=tf.uint8, name="uint8_input")
-    x = layers.Rescaling(scale=1.0, dtype='float32', name="to_float32")(inputs)
-    x = data_augmentation(x)
-    x = layers.Lambda(resnet_preprocess_fn, output_shape=(224, 224, 3), name="resnet_preprocess")(x)
-
-    backbone = ResNet50(include_top=False, weights='imagenet', input_shape=(224, 224, 3))
-    backbone.trainable = False
-
-    x = backbone(x, training=False)
-    x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Dense(512, activation='relu')(x)
-    x = layers.Dropout(0.3)(x)
-
-    species_out = layers.Dense(num_species, activation='softmax', dtype='float32', name='species_head')(x)
-    venomous_out = layers.Dense(1, activation='sigmoid', dtype='float32', name='venomous_head')(x)
-
-    return models.Model(inputs=inputs, outputs=[species_out, venomous_out]), backbone
-
 def unfreeze_resnet_top(backbone, num_layers=30):
     backbone.trainable = True
     for layer in backbone.layers[:-num_layers]:
@@ -223,25 +263,36 @@ def unfreeze_resnet_top(backbone, num_layers=30):
         else:
             layer.trainable = True
 
-def plot_training_history(history, save_path, fold):
-    plt.figure(figsize=(10, 6))
-    plt.plot(history.history['loss'], label='Tanítási Loss', color='blue', linewidth=2)
-    plt.plot(history.history['val_loss'], label='Validációs Loss', color='orange', linewidth=2)
-    plt.title(f'Modell Költségfüggvény (Fold {fold})', fontsize=14)
-    plt.xlabel('Epoch', fontsize=12)
-    plt.ylabel('Teljes Loss', fontsize=12)
-    plt.legend(fontsize=12)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(save_path)
-    print(f"\n[+] A Loss grafikon sikeresen elmentve ide: {save_path}")
-
 # ---------------------------------------------------------
-# 5. FŐPROGRAM (K-Fold Keresztvalidáció)
+# 6. FŐPROGRAM (LR Finder futtatása a Backbone-on)
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    print(f"Képek beolvasása innen: {IMAGE_DIR}")
+    if not WARMUP_MODEL_PATH.exists():
+        print(f"Hiba: A bemelegített modell nem található itt: {WARMUP_MODEL_PATH}")
+        print("Először futtasd le a warmup fázist a fő kódodban, hogy elmentsd a Fold 1 modelljét!")
+        sys.exit(1)
+
+    print(f"Adatok betöltése innen: {DATA_DIR} | Képek innen: {IMAGE_DIR}")
+    train_ds = create_dataset(DATA_DIR / "fold_1_train.csv", IMAGE_DIR, BATCH_SIZE, is_training=True)
+
+    print(f"\n[+] Bemelegített modell (Warm-up) betöltése innen: {WARMUP_MODEL_PATH}")
+    custom_objects = {
+        'venomous_penalty_metric': venomous_penalty_metric,
+        'cost_sensitive_species_loss': cost_sensitive_species_loss,
+        'weighted_binary_venomous_loss': weighted_binary_venomous_loss
+    }
     
+    with tf.keras.utils.custom_object_scope(custom_objects):
+        model = tf.keras.models.load_model(str(WARMUP_MODEL_PATH))
+
+    print("[-] ResNet50 felső 30 rétegének kiolvasztása (Unfreeze)...")
+    try:
+        backbone = model.get_layer('resnet50')
+    except ValueError:
+        backbone = [layer for layer in model.layers if isinstance(layer, tf.keras.Model)][0]
+
+    unfreeze_resnet_top(backbone, num_layers=30)
+
     compile_kwargs = {
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
@@ -249,116 +300,15 @@ if __name__ == "__main__":
         'jit_compile': False
     }
 
-    for fold in range(1, NUM_FOLDS + 1):
-        print("\n" + "="*60)
-        print(f"=== {fold}. FOLD TANÍTÁSA INDUL ===")
-        print("="*60)
+    print("\n=== LR Finder futtatása a Backbone-on (200 lépés, 1e-7 -> 1e-2) ===")
+    model.compile(optimizer=Adam(learning_rate=1e-7), **compile_kwargs)
 
-        # Fájl útvonalak az aktuális foldhoz a kép alapján
-        train_csv = DATA_DIR / f"fold_{fold}_train.csv"
-        val_csv = DATA_DIR / f"fold_{fold}_val.csv"
-        
-        # Cél útvonalak logoláshoz és mentéshez
-        fold_model_path = DRIVE_DIR / f"snake_multitask_model_fold_{fold}.keras"
-        fold_warmup_model_path = DRIVE_DIR / f"snake_multitask_warmup_fold_{fold}.keras"
-        fold_warmup_log = LOGS_DIR / f"warmup_log_fold_{fold}.csv"
-        fold_finetune_log = LOGS_DIR / f"finetune_log_fold_{fold}.csv"
-        fold_plot_path = LOGS_DIR / f"training_loss_plot_fold_{fold}.png"
+    lr_finder = LRFinder(start_lr=1e-7, end_lr=1e-2, max_steps=200)
+    
+    steps = 200
+    model.fit(train_ds, epochs=1, steps_per_epoch=steps, callbacks=[lr_finder], verbose=1)
 
-        print(f"Train CSV: {train_csv}")
-        print(f"Val CSV: {val_csv}")
-
-        train_ds = create_dataset(train_csv, IMAGE_DIR, BATCH_SIZE, is_training=True)
-        val_ds = create_dataset(val_csv, IMAGE_DIR, BATCH_SIZE, is_training=False)
-
-        finetune_callbacks = [
-            tf.keras.callbacks.ModelCheckpoint(
-                filepath=str(fold_model_path),
-                monitor='val_species_head_venomous_penalty_metric',
-                mode='min',
-                save_best_only=True,
-                verbose=1
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_species_head_venomous_penalty_metric',
-                mode='min',
-                factor=0.3,
-                patience=2,
-                min_lr=1e-6,
-                verbose=1
-            ),
-            tf.keras.callbacks.EarlyStopping(
-                monitor='val_species_head_venomous_penalty_metric',
-                mode='min',
-                patience=5,
-                restore_best_weights=True,
-                verbose=1
-            ),
-            tf.keras.callbacks.CSVLogger(filename=str(fold_finetune_log), separator=',', append=True)
-        ]
-
-        history = None
-
-        if fold_model_path.exists():
-            print(f"\n[+] Meglévő modell betöltése a {fold}. foldhoz: {fold_model_path}")
-            model = tf.keras.models.load_model(str(fold_model_path))
-            backbone = model.get_layer('resnet50')
-
-            print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk.")
-            print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE})...")
-
-            unfreeze_resnet_top(backbone, num_layers=30)
-            model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-            history = model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
-
-        else:
-            if fold_warmup_model_path.exists():
-                print(f"\n[+] Bemelegített (Warm-up) modell betöltése: {fold_warmup_model_path}")
-                model = tf.keras.models.load_model(str(fold_warmup_model_path))
-                backbone = model.get_layer('resnet50')
-                print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk, mert már elkészült.")
-                
-            else:
-                model, backbone = build_model()
-                print(f"\n=== 1. FÁZIS: Új fej bemelegítése (Fold {fold}, {WARMUP_EPOCHS} epoch) ===")
-                warmup_optimizer = tf.keras.optimizers.AdamW(
-                    learning_rate=WARMUP_LR,
-                    weight_decay=1e-4,
-                    clipnorm=1.0
-                )
-                model.compile(optimizer=warmup_optimizer, **compile_kwargs)
-
-                warmup_callbacks = [
-                    tf.keras.callbacks.CSVLogger(filename=str(fold_warmup_log), separator=',', append=True),
-                    tf.keras.callbacks.EarlyStopping(
-                        monitor='val_species_head_venomous_penalty_metric',
-                        mode='min',
-                        patience=2,
-                        restore_best_weights=True,
-                        verbose=1
-                    )
-                ]
-                model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
-                
-                model.save(str(fold_warmup_model_path))
-                print(f"Warm-up modell sikeresen elmentve: {fold_warmup_model_path}")
-
-            print(f"\n=== 2. FÁZIS: ResNet finomhangolása (Fold {fold}, {FINETUNE_EPOCHS} epoch) ===")
-            unfreeze_resnet_top(backbone, num_layers=30)
-            model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-
-            history = model.fit(
-                train_ds,
-                validation_data=val_ds,
-                epochs=WARMUP_EPOCHS + FINETUNE_EPOCHS,
-                initial_epoch=WARMUP_EPOCHS,
-                callbacks=finetune_callbacks
-            )
-
-        print(f"\n[Fold {fold} KÉSZ] A legjobb modell elmentve ide: {fold_model_path}")
-
-        if history is not None:
-            plot_training_history(history, str(fold_plot_path), fold)
-            
-        # Memória felszabadítása a következő iteráció előtt
-        tf.keras.backend.clear_session()
+    chosen_finetune_lr = lr_finder.get_optimal_lr(default_lr=DEFAULT_FINETUNE_LR)
+    print(f"\n[LRFinder] Megtalált optimális Backbone LR: {chosen_finetune_lr:.2e}")
+    print(f"--> Ezt az értéket ({chosen_finetune_lr:.6f}) írd be a fő kódod FINETUNE_LR változójába!")
+    lr_finder.plot_and_save(PLOT_PATH, chosen_finetune_lr)
