@@ -40,14 +40,14 @@ if IN_COLAB:
     drive.mount('/content/drive')
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
     
-    # Útvonalak a Drive mappaszerkezet alapján
     ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_224_letterboxed.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
-    CSV_SOURCE_DIR = DRIVE_DIR / 'CSV files'
+    
+    # Új útvonal a foldokhoz a kép alapján
+    FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / 'folds'
     LOGS_DIR = DRIVE_DIR / 'Logs'
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Kicsomagolás a helyi SSD-re a gyorsaságért
     if ZIP_PATH.exists():
         if not (EXTRACT_PATH / "train_images_224_letterboxed").exists():
             print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
@@ -55,52 +55,46 @@ if IN_COLAB:
             with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
                 zip_ref.extractall(EXTRACT_PATH)
             print("Kicsomagolás kész!")
-        else:
-            print("A képek már ki vannak csomagolva a helyi SSD-re.")
     else:
         print(f"FIGYELEM: A ZIP fájl nem található a Drive-on: {ZIP_PATH}")
 
-    # CSV fájlok gyorsítótárazása
-    LOCAL_DATA_DIR = Path('/content/data_local/CSV files')
-    LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # Fold CSV-k másolása a helyi meghajtóra a sebességért
+    LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
+    LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     
-    for csv_name in ["train_split_fixed.csv", "val_split_fixed.csv"]:
-        src_csv = CSV_SOURCE_DIR / csv_name
-        dst_csv = LOCAL_DATA_DIR / csv_name
-        if src_csv.exists() and not dst_csv.exists():
-            shutil.copy2(src_csv, dst_csv)
-
-    DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / "train_split_fixed.csv").exists() else CSV_SOURCE_DIR
+    if FOLDS_SOURCE_DIR.exists():
+        for i in range(1, 6):
+            for split in ['train', 'val']:
+                file_name = f"fold_{i}_{split}.csv"
+                src_csv = FOLDS_SOURCE_DIR / file_name
+                dst_csv = LOCAL_FOLDS_DIR / file_name
+                if src_csv.exists() and not dst_csv.exists():
+                    shutil.copy2(src_csv, dst_csv)
+    
+    DATA_DIR = LOCAL_FOLDS_DIR if (LOCAL_FOLDS_DIR / "fold_1_train.csv").exists() else FOLDS_SOURCE_DIR
     
     if (EXTRACT_PATH / "train_images_224_letterboxed").exists():
         IMAGE_DIR = EXTRACT_PATH / "train_images_224_letterboxed"
     else:
         IMAGE_DIR = EXTRACT_PATH
-    
-    # ÚTVONALAK A MODELLEKNEK ÉS A LOGOKNAK
-    MODEL_PATH = DRIVE_DIR / "snake_multitask_model.keras"
-    WARMUP_MODEL_PATH = DRIVE_DIR / "snake_multitask_warmup.keras"
-    WARMUP_LOG_PATH = DRIVE_DIR / "warmup_log.csv"
-    LOSS_PLOT_PATH = LOGS_DIR / "training_loss_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
     except NameError:
         PROJECT_ROOT = Path().resolve().parents[1]
-    DATA_DIR = PROJECT_ROOT / "data" / "CSV files"
+    DATA_DIR = PROJECT_ROOT / "data" / "CSV files" / "folds"
     IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
-    MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_model.keras"
-    WARMUP_MODEL_PATH = PROJECT_ROOT / "models" / "snake_multitask_warmup.keras"
-    WARMUP_LOG_PATH = PROJECT_ROOT / "models" / "warmup_log.csv"
-    LOSS_PLOT_PATH = PROJECT_ROOT / "models" / "training_loss_plot.png"
-    os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
+    LOGS_DIR = PROJECT_ROOT / "models"
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    DRIVE_DIR = PROJECT_ROOT / "models"
 
 # Hiperparaméterek
 BATCH_SIZE = 128
-WARMUP_EPOCHS = 3
-FINETUNE_EPOCHS = 10
+WARMUP_EPOCHS = 10 
+FINETUNE_EPOCHS = 30
 WARMUP_LR = 5e-4
 FINETUNE_LR = 1.5e-4
+NUM_FOLDS = 5
 
 # ---------------------------------------------------------
 # 2. GYORS ADATBETÖLTŐ PIPELINE
@@ -229,11 +223,11 @@ def unfreeze_resnet_top(backbone, num_layers=30):
         else:
             layer.trainable = True
 
-def plot_training_history(history, save_path):
+def plot_training_history(history, save_path, fold):
     plt.figure(figsize=(10, 6))
     plt.plot(history.history['loss'], label='Tanítási Loss', color='blue', linewidth=2)
     plt.plot(history.history['val_loss'], label='Validációs Loss', color='orange', linewidth=2)
-    plt.title('Modell Költségfüggvény (Loss) Változása az Epochok Során', fontsize=14)
+    plt.title(f'Modell Költségfüggvény (Fold {fold})', fontsize=14)
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Teljes Loss', fontsize=12)
     plt.legend(fontsize=12)
@@ -243,13 +237,11 @@ def plot_training_history(history, save_path):
     print(f"\n[+] A Loss grafikon sikeresen elmentve ide: {save_path}")
 
 # ---------------------------------------------------------
-# 5. FŐPROGRAM (Warm-up -> Finomhangolás)
+# 5. FŐPROGRAM (K-Fold Keresztvalidáció)
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    print(f"Adatok betöltése innen: {DATA_DIR} | Képek innen: {IMAGE_DIR}")
-    train_ds = create_dataset(DATA_DIR / "train_split_fixed.csv", IMAGE_DIR, BATCH_SIZE, is_training=True)
-    val_ds = create_dataset(DATA_DIR / "val_split_fixed.csv", IMAGE_DIR, BATCH_SIZE, is_training=False)
-
+    print(f"Képek beolvasása innen: {IMAGE_DIR}")
+    
     compile_kwargs = {
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
@@ -257,79 +249,116 @@ if __name__ == "__main__":
         'jit_compile': False
     }
 
-    finetune_callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(MODEL_PATH),
-            monitor='val_species_head_venomous_penalty_metric',
-            mode='min',
-            save_best_only=True,
-            verbose=1
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_species_head_venomous_penalty_metric',
-            mode='min',
-            factor=0.3,
-            patience=2,
-            min_lr=1e-6,
-            verbose=1
-        )
-    ]
+    for fold in range(1, NUM_FOLDS + 1):
+        print("\n" + "="*60)
+        print(f"=== {fold}. FOLD TANÍTÁSA INDUL ===")
+        print("="*60)
 
-    history = None
+        # Fájl útvonalak az aktuális foldhoz a kép alapján
+        train_csv = DATA_DIR / f"fold_{fold}_train.csv"
+        val_csv = DATA_DIR / f"fold_{fold}_val.csv"
+        
+        # Cél útvonalak logoláshoz és mentéshez
+        fold_model_path = DRIVE_DIR / f"snake_multitask_model_fold_{fold}.keras"
+        fold_warmup_model_path = DRIVE_DIR / f"snake_multitask_warmup_fold_{fold}.keras"
+        fold_warmup_log = LOGS_DIR / f"warmup_log_fold_{fold}.csv"
+        fold_finetune_log = LOGS_DIR / f"finetune_log_fold_{fold}.csv"
+        fold_plot_path = LOGS_DIR / f"training_loss_plot_fold_{fold}.png"
 
-    # --- A) HA MÁR VAN ELMENTETT FINOMHANGOLT MODELL: FOLYTATÁS ---
-    if MODEL_PATH.exists():
-        print(f"\n[+] Meglévő modell betöltése innen: {MODEL_PATH}")
-        model = tf.keras.models.load_model(str(MODEL_PATH))
-        backbone = model.get_layer('resnet50')
+        print(f"Train CSV: {train_csv}")
+        print(f"Val CSV: {val_csv}")
 
-        print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk.")
-        print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={FINETUNE_LR:.2e})...")
+        train_ds = create_dataset(train_csv, IMAGE_DIR, BATCH_SIZE, is_training=True)
+        val_ds = create_dataset(val_csv, IMAGE_DIR, BATCH_SIZE, is_training=False)
 
-        unfreeze_resnet_top(backbone, num_layers=30)
-        model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-        history = model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
+        finetune_callbacks = [
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath=str(fold_model_path),
+                monitor='val_species_head_venomous_penalty_metric',
+                mode='min',
+                save_best_only=True,
+                verbose=1
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_species_head_venomous_penalty_metric',
+                mode='min',
+                factor=0.3,
+                patience=2,
+                min_lr=1e-6,
+                verbose=1
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_species_head_venomous_penalty_metric',
+                mode='min',
+                patience=5,
+                restore_best_weights=True,
+                verbose=1
+            ),
+            tf.keras.callbacks.CSVLogger(filename=str(fold_finetune_log), separator=',', append=True)
+        ]
 
-    # --- B) HA MÉG NINCS FINOMHANGOLT MODELL ---
-    else:
-        if WARMUP_MODEL_PATH.exists():
-            print(f"\n[+] Bemelegített (Warm-up) modell betöltése innen: {WARMUP_MODEL_PATH}")
-            model = tf.keras.models.load_model(str(WARMUP_MODEL_PATH))
+        history = None
+
+        if fold_model_path.exists():
+            print(f"\n[+] Meglévő modell betöltése a {fold}. foldhoz: {fold_model_path}")
+            model = tf.keras.models.load_model(str(fold_model_path))
             backbone = model.get_layer('resnet50')
-            print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk, mert már elkészült.")
-            
+
+            print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk.")
+            print(f"2. FÁZIS: Finomhangolás FOLYTATÁSA ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE})...")
+
+            unfreeze_resnet_top(backbone, num_layers=30)
+            model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
+            history = model.fit(train_ds, validation_data=val_ds, epochs=FINETUNE_EPOCHS, callbacks=finetune_callbacks)
+
         else:
-            model, backbone = build_model()
-            print(f"\n=== 1. FÁZIS: Új fej bemelegítése ({WARMUP_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={WARMUP_LR:.2e}) ===")
-            warmup_optimizer = tf.keras.optimizers.AdamW(
-                learning_rate=WARMUP_LR,
-                weight_decay=1e-4,
-                clipnorm=1.0
+            if fold_warmup_model_path.exists():
+                print(f"\n[+] Bemelegített (Warm-up) modell betöltése: {fold_warmup_model_path}")
+                model = tf.keras.models.load_model(str(fold_warmup_model_path))
+                backbone = model.get_layer('resnet50')
+                print(f"\n[!] Az 1. FÁZIST (Warm-up) átugorjuk, mert már elkészült.")
+                
+            else:
+                model, backbone = build_model()
+                print(f"\n=== 1. FÁZIS: Új fej bemelegítése (Fold {fold}, {WARMUP_EPOCHS} epoch) ===")
+                warmup_optimizer = tf.keras.optimizers.AdamW(
+                    learning_rate=WARMUP_LR,
+                    weight_decay=1e-4,
+                    clipnorm=1.0
+                )
+                model.compile(optimizer=warmup_optimizer, **compile_kwargs)
+
+                warmup_callbacks = [
+                    tf.keras.callbacks.CSVLogger(filename=str(fold_warmup_log), separator=',', append=True),
+                    tf.keras.callbacks.EarlyStopping(
+                        monitor='val_species_head_venomous_penalty_metric',
+                        mode='min',
+                        patience=2,
+                        restore_best_weights=True,
+                        verbose=1
+                    )
+                ]
+                model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
+                
+                model.save(str(fold_warmup_model_path))
+                print(f"Warm-up modell sikeresen elmentve: {fold_warmup_model_path}")
+
+            print(f"\n=== 2. FÁZIS: ResNet finomhangolása (Fold {fold}, {FINETUNE_EPOCHS} epoch) ===")
+            unfreeze_resnet_top(backbone, num_layers=30)
+            model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
+
+            history = model.fit(
+                train_ds,
+                validation_data=val_ds,
+                epochs=WARMUP_EPOCHS + FINETUNE_EPOCHS,
+                initial_epoch=WARMUP_EPOCHS,
+                callbacks=finetune_callbacks
             )
-            model.compile(optimizer=warmup_optimizer, **compile_kwargs)
 
-            warmup_callbacks = [
-                tf.keras.callbacks.CSVLogger(filename=str(WARMUP_LOG_PATH), separator=',', append=True)
-            ]
-            model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
+        print(f"\n[Fold {fold} KÉSZ] A legjobb modell elmentve ide: {fold_model_path}")
+
+        if history is not None:
+            plot_training_history(history, str(fold_plot_path), fold)
             
-            model.save(str(WARMUP_MODEL_PATH))
-            print(f"Warm-up modell sikeresen elmentve ide: {WARMUP_MODEL_PATH}")
-            print(f"Warm-up log elmentve ide: {WARMUP_LOG_PATH}")
-
-        print(f"\n=== 2. FÁZIS: ResNet finomhangolása ({FINETUNE_EPOCHS} epoch, Batch={BATCH_SIZE}, LR={FINETUNE_LR:.2e}) ===")
-        unfreeze_resnet_top(backbone, num_layers=30)
-        model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-
-        history = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=WARMUP_EPOCHS + FINETUNE_EPOCHS,
-            initial_epoch=WARMUP_EPOCHS,
-            callbacks=finetune_callbacks
-        )
-
-    print("\nTanítás befejeződött, a legjobb büntetésű modell elmentve ide:", MODEL_PATH)
-
-    if history is not None:
-        plot_training_history(history, str(LOSS_PLOT_PATH))
+        # Memória felszabadítása a következő iteráció előtt
+        tf.keras.backend.clear_session()
