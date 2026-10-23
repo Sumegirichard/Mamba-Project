@@ -24,8 +24,8 @@ def fix_class_ids():
     val_df['class_id'] = le.transform(val_df['class_id'])
     
     # 5. Elmentjük a felülírt fájlokat
-    train_df.to_csv(DATA_DIR / "train_split_fixed.csv", index=False)
-    val_df.to_csv(DATA_DIR / "val_split_fixed.csv", index=False)
+    train_df.to_csv(DATA_DIR / "train_split_fixed_stratify.csv", index=False)
+    val_df.to_csv(DATA_DIR / "val_split_fixed_stratify.csv", index=False)
     
     # Lementjük a szótárat is, hogy a predikciónál vissza tudjuk kódolni a számot a faj nevére!
     # Létrehozunk egy mapping DataFrame-et

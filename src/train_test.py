@@ -1,22 +1,20 @@
 from pathlib import Path
-
 import pandas as pd
-from sklearn.model_selection import GroupShuffleSplit
+from sklearn.model_selection import train_test_split
 import numpy as np
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
-
 def split_data():
-    # Cseréld ki a pontos CSV nevedre, ha más lenne!
     df = pd.read_csv(DATA_DIR / "merged_snake_metadata.csv")
     
-    # 80-20% vágás az observation_id alapján (Data Leakage védelem)
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, val_idx = next(gss.split(df, groups=df['observation_id']))
-    
-    df_train = df.iloc[train_idx]
-    df_val = df.iloc[val_idx]
+    # 80-20% rétegzett (stratified) vágás a class_id alapján
+    df_train, df_val = train_test_split(
+        df, 
+        test_size=0.2, 
+        stratify=df['class_id'], 
+        random_state=42
+    )
     
     # Kimentjük a kész fájlokat
     df_train.to_csv(DATA_DIR / "train_split.csv", index=False)
