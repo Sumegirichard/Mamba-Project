@@ -60,8 +60,21 @@ train es validation oldalon valo megjelenese adat-szivargast okozna. A
 visualization.py a fontosabb eloszlasokat a plots/ mappaba menti, igy az
 osztaly- es celvaltozo-imbalance lathato a tanitas elott.
 
-4. Train/validation felosztas
-Az adatokat 80-20% arányban tanító (train) és validációs (val) halmazokra bontottuk. A train_test.py GroupShuffleSplit-et használ, a csoportosítás kulcsa az observation_id. Ez tudatos adat-szivárgás elleni döntés: egy megfigyeléshez kapcsolódó képek nem taníthatják és validálhatják egyszerre ugyanazt a vizuális mintát.
+4. Adatfelosztas es keresztvalidacio
+Az eredeti kiserleti folyamat 80-20% aranyu tanito (train) es validacios (val)
+felosztast hasznalt. 
+A veglegesitett tervezesi dontes szerint a fix 80-20 split helyett csoportos
+keresztvalidaciora allunk at. A foldok kialakitasanal tovabbra is az
+observation_id a csoportositasi egyseg, igy egy megfigyeles kepei nem
+kerulhetnek kulon train es validacios foldba. A keresztvalidacio celja, hogy
+ne egyetlen veletlen felosztas eredmenyetol fuggjon a modell megitelese, es
+megbizhatobb becslest kapjunk az altalanosithatosagra.
+
+A cross-validation soran minden foldban ugyanazt a preprocessinget,
+class_id mappinget, loss-sulyozast es ertekelesi protokollt kell hasznalni.
+Az eredmenyeket foldonkent es osszesitve is naplozni kell. A tesztelesre
+fenntartott, vegso adathalmazt nem szabad a tanulasi vagy LR Finder
+dontesekhez felhasznalni.
 
 A split lépés eredeti kimenete:
 -data/train_split.csv
@@ -89,8 +102,6 @@ majd 224x224 méretre méretez. Az ImageOps.pad megőrzi
 az eredeti oldalarányt, a szabad területet pedig szürke kitöltéssel 
 tölti ki. Ez a döntés csökkenti az aránytalan nyújtást, ami a kígyó 
 testformájának felismerését ronthatná.
-
-7. Modellarch
 
 7. Modellarchitektura
 ---------------------
@@ -152,13 +163,86 @@ mergezesi cimkek egyutt kezelendo.
 
 Ez nyilván a feladatból adódva jött.
 
-10. Tanitasi futas
+10. Learning rate es optimalis epoch keresese
+----------------------------------------------
+A learning rate-et nem kezzel, egyetlen tetszoleges ertekkel allitjuk be,
+hanem LR Finder segitsegevel keressuk meg. Az LR Finder fokozatosan noveli a
+learning rate-et, kozben naplozza a loss alakulását, majd a loss
+legmeredekebb csokkenesi tartomanyabol javasolt erteket ad. A keresest a
+warm-up fazishoz es a backbone finomhangolasahoz kulon kell elvegezni, mert
+a ket fazis parameterterei es optimalizacios erzékenysége elter.
+
+A cel a kovetkezo ertekek empirikus meghatarozasa:
+- warm-up learning rate;
+- backbone-finetune learning rate;
+- az optimalis epoch-szam vagy a megfelelo early-stopping pont.
+
+Az epoch-szamot nem elore rogzitett, bizonyitott optimumkent kezeljuk. A
+cross-validation foldok tanulasi gorbei, a validacios loss, a fajfelismeresi
+mutatok es a mergezo osztaly recall-ja alapjan valasztjuk ki azt az epoch
+tartomanyt, ahol a teljesitmeny stabil, de meg nem kezd tulilleszkedni.
+A vegso konfiguracioban ezert az LR Finder grafikonja, a foldonkenti
+training/validation logok es az early stopping eredmenye egyutt dont.
+
+Az LR Finder eredmenye nem garantalt globalis optimum: diagnosztikai
+javaslat. A javasolt learning rate-et normalis, validacios tanitassal kell
+visszaellenorizni. A Finder sajat futasa utan a modellt es az optimizer
+allapotat a tenyleges tanitas elott ujra kell inicializalni.
+
+11. Utemezett tanitasi strategia: warm-up, small es medium kepek
+-----------------------------------------------------------------
+A tanitas fokozatosan, novekvo kepinformacioval tortenik:
+
+1. Warm-up fazis: a modell kezdeti tanitasa stabil, kisebb vagy gyorsabban
+   feldolgozhato kepekkel, illetve a transfer learning modell fejcserejevel.
+   Ebben a fazisban a ResNet50 backbone fagyasztott vagy csak minimalisan
+   finomhangolt. A cel a kimeneti fejek es a kozos feature-reprezentacio
+   stabilizalasa, nem a teljes backbone azonnali atallitasa.
+2. Small images fazis: a warm-up utan a small meretu kepkeszleten tovabbi
+   tanitas kovetkezik. Itt mar a tanult reprezentacio a feladat sajat
+   kepeloszlasahoz igazodik, mikozben a szamitasi koltseg kontrollalhato.
+3. Medium images fazis: nehany epoch utan, amikor a tanulasi gorbe stabilabb,
+   atterunk a medium meretu kepekre.  Az atteresnel az optimizer, a batch size es az
+   LR Finderbol szarmazo learning rate dokumentaltan kezelendo.
+
+Az atteres nem jelent uj modellcelokat: mindket output head ugyanaz marad,
+es a multitask loss sulyai sem valtoznak indokolatlanul. A fazisok hataran
+erdemes checkpointot menteni, hogy romlas eseten vissza lehessen terni az
+elozo stabil allapothoz.
+
+12. Drive-artefaktumok, naplozas es abrazolas
+----------------------------------------------
+A tanitasi es LR Finder kiserletekhez kapott
+drive-download-20261024T082055Z-1-001.zip Google Drive ZIP nemcsak
+nyers adatot, hanem a dontesek visszaellenorzesere alkalmas artefaktumokat
+is tartalmaz. A ZIP-ben az alabbi fajlok szerepelnek:
+
+- lr_finder_plot.png es lr_finder_plot_fold_1.png ... lr_finder_plot_fold_5.png:
+  a foldonkenti learning rate keresesi gorbek;
+- lr_finder_backbone_fold_1_plot.png: backbone-finetune LR Finder eredmeny;
+- warmup_log.csv, warmup_log_fold_1.csv, warmup_log_fold_2.csv:
+  a warm-up fazis tanulasi naploi;
+- warmup visualization.png: a warm-up folyamat vizualis osszefoglalasa;
+- training_loss_plot.png es training_loss_plot_fold_1.png:
+  a training loss valtozasat bemutato abrazolasok;
+- finetune_log_fold_1.csv: a backbone finomhangolasi naploja;
+- lr_finder_plot(1).png: egy tovabbi LR Finder kiserleti eredmeny.
+
+Ezeket az artefaktumokat nem csupan prezentacios kepkent kezeljuk. Az
+LR-gorbek a learning rate valasztas bizonyitekai, a CSV naplok az epochok
+es a loss alakulasanak reprodukalhatosagat segitik, a training-loss es
+warm-up abrazolasok pedig a tulillesztes, a nem tanulas vagy a tanulas
+instabilitasanak felismereset tamogatjak. A fajlokat kiserletazonositoval,
+foldszammal, adatformaval, kepmerettel es kodverzioval kell osszekapcsolni.
+
+13. Tanitasi futas
 ------------------
 A jelenlegi beallitasok:
 - batch size: 32;
-- epoch: 10;
+- epoch: kezdetben kiserleti maximum, a vegso erteket LR Finder,
+  cross-validation es early stopping alapjan valasztjuk;
 - optimizer: Adam;
-- learning rate: 1e-4;
+- learning rate: LR Finder altal javasolt, fazisonkent kulon validalt ertek;
 - Dataset pipeline: map, shuffle, batch, prefetch;
 - shuffle buffer: 1000;
 - parhuzamos adatfeldolgozas: tf.data.AUTOTUNE;
@@ -167,7 +251,7 @@ A jelenlegi beallitasok:
 A modell mentese a model.py szerint:
 models/snake_multitask_model.keras
 
-11. Predikcio tervezett kimenete
+14. Predikcio tervezett kimenete
 --------------------------------
 A predict.py egy kepet olvas be, batch dimenziot ad hozza, majd a ket kimenetbol
 kiirja:
@@ -180,7 +264,7 @@ A mergezesi kuszob jelenleg 0.5. A faj azonositoja a legnagyobb softmax
 valoszinusegu index, amelyet a class_id_mapping.csv segitsegevel a jovoben
 fajnevhez kell visszaforditani.
 
-12. Jelenlegi eltérések es dokumentalt technikai kockazatok
+15. Jelenlegi eltérések es dokumentalt technikai kockazatok
 ------------------------------------------------------------
 Az alabbitokat a tovabbi fejlesztes elott rendezni kell:
 
@@ -223,18 +307,24 @@ Az alabbitokat a tovabbi fejlesztes elott rendezni kell:
    A tanitasi folyamat elott erdemes ellenorizni, hogy nem maradt-e ki kep,
    es minden CSV-ben hivatkozott fajl tenylegesen letezik.
 
-13. Reprodukcio es kovetkezo lepesek
+16. Reprodukcio es kovetkezo lepesek
 ------------------------------------
 Javasolt, dokumentalt futatasi sorrend:
 
 1. EDA es keputvonal-ellenorzes a nyers/merged metaadaton.
 2. merge.py futtatasa, ha a merged CSV meg nem aktualis.
-3. train_test.py futtatasa az observation_id szerinti csoportos splithez.
+3. observation_id szerinti csoportos cross-validation foldok eloallitasa.
 4. fix_labels.py futtatasa a 0-295 kozotti suru class ID-khoz.
 5. letterboxing.py futtatasa az elokeszitett kepek eloallitasahoz.
-6. model.py futtatasa a tanitashoz es a modell mentesehez.
-7. predikcio csak azzal az elofeldolgozassal, amely a tanitassal azonos.
-8. class_id_mapping.csv hasznalata a modellazonosito visszafejtesehez.
+6. LR Finder futtatasa a warm-up es a backbone-finetune fazishoz.
+7. Warm-up tanitas, majd small images tanitas.
+8. Néhany stabilizalo epoch utan atteres medium images tanitasra.
+9. Foldonkenti naplok, checkpointok es training/LR Finder abrazolasok mentese.
+10. A legjobb epoch-tartomany es learning rate kivalasztasa a foldok
+    osszesitett validacios eredmenye alapjan.
+11. Vegso modell ujratanitasa a kivalasztott konfiguracioval es mentese.
+12. Predikcio csak azzal az elofeldolgozassal, amely a tanitassal azonos.
+13. class_id_mapping.csv hasznalata a modellazonosito visszafejtesehez.
 
 A jovoben erdemes a kovetkezoket is rogziteni:
 - modell, mapping es elofeldolgozasi konfiguracio egyuttes verzioja;
@@ -252,10 +342,16 @@ Osszegzes
 A projekt fo tervezesi iranya egy ResNet50-re epulo, ketfeju multitask
 klasszifikator, amely a fajfelismerest es a mergezesi statuszt egy kozos
 kepi reprezentaciobol tanulja. A legfontosabb vedelmi dontes a
-group-alapu, observation_id szerinti split. A legfontosabb jelenlegi
-megbizhatosagi kockazat az elofeldolgozas es a modellfajl hasznalatanak
-elterese a tanitasi es predikcios kod kozott; ennek egysegesitese a
-kovetkezo technikai prioritas.
+group-alapu, observation_id szerinti cross-validation. A learning rate-et
+LR Finderrel, az epoch-szamot a foldonkenti validacios gorbekkel es early
+stoppinggal valasztjuk. A tanitas staged folyamat: warm-up, small images,
+majd nehany epoch utan medium images.
+
+A Drive-bol szarmazo LR Finder gorbek, warm-up es finetune naplok, valamint
+training-loss abrazolasok a tanulasi dontesek dokumentalt bizonyitekai.
+A legfontosabb jelenlegi megbizhatosagi kockazat az elofeldolgozas es a
+modellfajl hasznalatanak elterese a tanitasi es predikcios kod kozott; ennek
+egysegesitese tovabbra is technikai prioritas.
 
 Megpróbáltuk a warmup learning ratehoz megtalálni az optimális értéket. Először ezt kézzel próbáltuk állítgatni
 ,de hamar rájöttünk hogy LR optimalizaloval ezt meg tudjuk tenni és a diagramró le tudjuk olvasni. Ezeket logoltuk is 
