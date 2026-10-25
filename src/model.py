@@ -182,7 +182,7 @@ def build_model(num_species=296):
     inputs = Input(shape=(224, 224, 3), dtype=tf.uint8)
     
     # Castolás float32-re (0-255 tartomány). Az EfficientNetV2 saját magát skálázza belül!
-    x = tf.cast(inputs, tf.float32)
+    x = layers.Rescaling(scale=1.0, dtype='float32')(inputs)
     x = data_augmentation(x)
 
     # 1. Alapértelmezett ImageNet gerinc felépítése
