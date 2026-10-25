@@ -55,7 +55,6 @@ if IN_COLAB:
     LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
     LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Elegendő a Fold 1-et használni az LR teszthez
     src_csv = FOLDS_SOURCE_DIR / "fold_1_train.csv"
     dst_csv = LOCAL_FOLDS_DIR / "fold_1_train.csv"
     if src_csv.exists() and not dst_csv.exists():
@@ -69,7 +68,7 @@ if IN_COLAB:
         IMAGE_DIR = EXTRACT_PATH
         
     WARMUP_MODEL_PATH = DRIVE_DIR / "snake_efficientnet_warmup_fold_1.keras"
-    PLOT_PATH = LOGS_DIR / "lr_finder_backbone_fold_1_plot.png"
+    PLOT_PATH = LOGS_DIR / "lr_finder_effnet_backbone_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +77,7 @@ else:
     DATA_DIR = PROJECT_ROOT / "data" / "CSV files" / "folds"
     IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
     WARMUP_MODEL_PATH = PROJECT_ROOT / "models" / "snake_efficientnet_warmup_fold_1.keras"
-    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_backbone_fold_1_plot.png"
+    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_effnet_backbone_plot.png"
     os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
 # Hiperparaméterek
@@ -93,12 +92,6 @@ def process_image(file_path, class_id, venomous):
     img = tf.io.decode_jpeg(img, channels=3, dct_method='INTEGER_FAST')
     img.set_shape([224, 224, 3])
     return img, {'species_head': class_id, 'venomous_head': venomous}
-
-data_augmentation = tf.keras.Sequential([
-    layers.RandomFlip("horizontal", dtype='float32'),
-    layers.RandomRotation(0.15, fill_mode="reflect", dtype='float32'),
-    layers.RandomZoom(0.1, fill_mode="reflect", dtype='float32'),
-], name="gpu_augmentation")
 
 def create_dataset(csv_file, img_dir, batch_size, is_training=True):
     df = pd.read_csv(csv_file)
@@ -164,7 +157,6 @@ def venomous_binary_accuracy(y_true, y_pred):
 def batch_macro_f1(y_true, y_pred):
     y_true = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     y_pred = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-    
     def calc_f1(c):
         c = tf.cast(c, tf.int32)
         true_pos = tf.reduce_sum(tf.cast(tf.logical_and(tf.equal(y_true, c), tf.equal(y_pred, c)), tf.float32))
@@ -173,7 +165,6 @@ def batch_macro_f1(y_true, y_pred):
         precision = true_pos / (true_pos + false_pos + tf.keras.backend.epsilon())
         recall = true_pos / (true_pos + false_neg + tf.keras.backend.epsilon())
         return 2.0 * ((precision * recall) / (precision + recall + tf.keras.backend.epsilon()))
-    
     unique_classes, _ = tf.unique(y_true)
     f1_scores = tf.map_fn(calc_f1, unique_classes, dtype=tf.float32)
     return tf.reduce_mean(f1_scores)
@@ -199,7 +190,7 @@ def weighted_binary_venomous_loss(y_true, y_pred):
     return tf.reduce_mean(bce * weights)
 
 # ---------------------------------------------------------
-# 4. AUTOMATIKUS LEARNING RATE FINDER (BACKBONE-RA HANGOLVA)
+# 4. ÚJ, PONTOSABB LEARNING RATE FINDER
 # ---------------------------------------------------------
 class LRFinder(tf.keras.callbacks.Callback):
     def __init__(self, start_lr=1e-7, end_lr=1e-2, max_steps=200):
@@ -245,12 +236,24 @@ class LRFinder(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
     def get_optimal_lr(self, default_lr=1.5e-4):
-        if len(self.smoothed_losses) < 30:
+        if len(self.smoothed_losses) < 50:
             return default_lr
-        losses_arr = np.array(self.smoothed_losses[10:-5])
-        lrs_arr = np.array(self.lrs[10:-5])
+            
+        skip_begin = 30
+        skip_end = 5
+        
+        losses_arr = np.array(self.smoothed_losses[skip_begin:-skip_end])
+        lrs_arr = np.array(self.lrs[skip_begin:-skip_end])
+        
+        if len(losses_arr) < 10:
+            return default_lr
+            
         gradients = np.gradient(losses_arr)
-        min_grad_idx = int(np.argmin(gradients))
+        smoothed_gradients = np.convolve(gradients, np.ones(10)/10, mode='valid')
+        
+        pad = 10 // 2
+        min_grad_idx = int(np.argmin(smoothed_gradients)) + pad
+        
         optimal_lr = float(lrs_arr[min_grad_idx])
         return float(np.clip(optimal_lr, 1e-6, 1e-3))
 
@@ -262,7 +265,7 @@ class LRFinder(tf.keras.callbacks.Callback):
         plt.xscale('log')
         plt.xlabel('Tanulási ráta (Log skála)')
         plt.ylabel('Költségérzékeny Loss')
-        plt.title('LR Finder eredménye (Backbone finomhangolás - Fold 1)')
+        plt.title('LR Finder eredménye (EfficientNetV2B2 - Backbone - Fold 1)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -319,8 +322,8 @@ if __name__ == "__main__":
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
         'metrics': {
-            'species_head': ['accuracy', batch_macro_f1, venomous_penalty_metric, venomous_binary_accuracy], 
-            'venomous_head': 'accuracy'
+            'species_head': ['accuracy'], 
+            'venomous_head': ['accuracy']
         },
         'jit_compile': False
     }

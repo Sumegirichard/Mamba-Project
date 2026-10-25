@@ -39,14 +39,12 @@ if IN_COLAB:
     drive.mount('/content/drive')
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba/')
     
-    # Kép ZIP és CSV fájlok elérési útjai a képi struktúra alapján
     ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_224_letterboxed.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
     CSV_SOURCE_DIR = DRIVE_DIR / 'CSV files' / 'folds'
     LOGS_DIR = DRIVE_DIR / 'Logs'
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Kicsomagolás végrehajtása ha még nem létezik a célmappa
     if ZIP_PATH.exists():
         if not (EXTRACT_PATH / "train_images_224_letterboxed").exists():
             print(f"Képek kicsomagolása a helyi SSD-re: {EXTRACT_PATH} ...")
@@ -56,13 +54,10 @@ if IN_COLAB:
             print("Kicsomagolás kész!")
         else:
             print("A képek már ki vannak csomagolva a helyi SSD-re.")
-    else:
-        print(f"FIGYELEM: A ZIP fájl nem található a Drive-on: {ZIP_PATH}")
-
+    
     LOCAL_DATA_DIR = Path('/content/data_local/folds')
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
     
-    # CSV fájlok másolása a folds mappából (elég a fold_1_train)
     csv_name = "fold_1_train.csv"
     src_csv = CSV_SOURCE_DIR / csv_name
     dst_csv = LOCAL_DATA_DIR / csv_name
@@ -71,13 +66,12 @@ if IN_COLAB:
 
     DATA_DIR = LOCAL_DATA_DIR if (LOCAL_DATA_DIR / csv_name).exists() else CSV_SOURCE_DIR
     
-    # Mindig a helyi kicsomagolt mappát preferáljuk Colab alatt a sebességért
     if (EXTRACT_PATH / "train_images_224_letterboxed").exists():
         IMAGE_DIR = EXTRACT_PATH / "train_images_224_letterboxed"
     else:
         IMAGE_DIR = EXTRACT_PATH
         
-    PLOT_PATH = LOGS_DIR / "lr_finder_plot.png"
+    PLOT_PATH = LOGS_DIR / "lr_finder_effnet_warmup_plot.png"
 else:
     try:
         PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -85,7 +79,7 @@ else:
         PROJECT_ROOT = Path().resolve().parents[1]
     DATA_DIR = PROJECT_ROOT / "data" / "CSV files" / "folds"
     IMAGE_DIR = PROJECT_ROOT / "data" / "Databank" / "Train data" / "train_images_224_letterboxed"
-    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_plot.png"
+    PLOT_PATH = PROJECT_ROOT / "models" / "lr_finder_effnet_warmup_plot.png"
     os.makedirs(PROJECT_ROOT / "models", exist_ok=True)
 
 # Hiperparaméterek
@@ -93,7 +87,7 @@ BATCH_SIZE = 128
 DEFAULT_WARMUP_LR = 5e-4
 
 # ---------------------------------------------------------
-# 2. GYORS ADATBETÖLTŐ PIPELINE (uint8 + INTEGER_FAST)
+# 2. GYORS ADATBETÖLTŐ PIPELINE
 # ---------------------------------------------------------
 def process_image(file_path, class_id, venomous):
     img = tf.io.read_file(file_path)
@@ -126,10 +120,6 @@ def create_dataset(csv_file, img_dir, batch_size, is_training=True):
         ds = ds.shuffle(buffer_size=len(df), reshuffle_each_iteration=True)
 
     ds = ds.map(process_image, num_parallel_calls=tf.data.AUTOTUNE)
-
-    if not is_training:
-        ds = ds.cache()
-
     ds = ds.batch(batch_size, drop_remainder=is_training)
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
@@ -154,28 +144,13 @@ v_mapping = tf.constant([
 v_mapping_float = tf.cast(v_mapping, tf.float32)
 
 @register_serializable()
-def venomous_penalty_metric(y_true, y_pred):
-    y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
-    y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-
-    v_y = tf.gather(v_mapping_float, y_true_class)
-    v_y_hat = tf.gather(v_mapping_float, y_pred_class)
-
-    base_penalty = 1.0 + 4.0 * v_y + (1.0 - 4.0 * v_y) * v_y_hat
-    is_wrong = tf.cast(tf.not_equal(y_true_class, y_pred_class), tf.float32)
-    return tf.reduce_mean(base_penalty * is_wrong)
-
-@register_serializable()
 def cost_sensitive_species_loss(y_true, y_pred):
     y_pred = tf.cast(y_pred, tf.float32)
     y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
     v_y = tf.gather(v_mapping_float, y_true_int)
-
     v_y_pred = tf.reduce_sum(y_pred * v_mapping_float, axis=-1)
-
     weight_if_venomous = 5.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
     weight_if_non_venomous = 1.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
-
     weight = v_y * weight_if_venomous + (1.0 - v_y) * weight_if_non_venomous
     scce = tf.keras.losses.sparse_categorical_crossentropy(y_true_int, y_pred)
     return tf.reduce_mean(scce * weight)
@@ -189,7 +164,7 @@ def weighted_binary_venomous_loss(y_true, y_pred):
     return tf.reduce_mean(bce * weights)
 
 # ---------------------------------------------------------
-# 4. AUTOMATIKUS LEARNING RATE FINDER CALLBACK
+# 4. ÚJ, PONTOSABB LEARNING RATE FINDER
 # ---------------------------------------------------------
 class LRFinder(tf.keras.callbacks.Callback):
     def __init__(self, start_lr=1e-6, end_lr=1e-1, max_steps=200):
@@ -235,14 +210,26 @@ class LRFinder(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
     def get_optimal_lr(self, default_lr=5e-4):
-        if len(self.smoothed_losses) < 30:
+        if len(self.smoothed_losses) < 50:
             return default_lr
-        losses_arr = np.array(self.smoothed_losses[10:-5])
-        lrs_arr = np.array(self.lrs[10:-5])
+            
+        skip_begin = 30
+        skip_end = 5
+        
+        losses_arr = np.array(self.smoothed_losses[skip_begin:-skip_end])
+        lrs_arr = np.array(self.lrs[skip_begin:-skip_end])
+        
+        if len(losses_arr) < 10:
+            return default_lr
+            
         gradients = np.gradient(losses_arr)
-        min_grad_idx = int(np.argmin(gradients))
+        smoothed_gradients = np.convolve(gradients, np.ones(10)/10, mode='valid')
+        
+        pad = 10 // 2
+        min_grad_idx = int(np.argmin(smoothed_gradients)) + pad
+        
         optimal_lr = float(lrs_arr[min_grad_idx])
-        return float(np.clip(optimal_lr, 1e-4, 1e-2))
+        return float(np.clip(optimal_lr, 1e-5, 1e-2))
 
     def plot_and_save(self, save_path, suggested_lr):
         plt.figure(figsize=(10, 5))
@@ -252,7 +239,7 @@ class LRFinder(tf.keras.callbacks.Callback):
         plt.xscale('log')
         plt.xlabel('Tanulási ráta (Log skála)')
         plt.ylabel('Költségérzékeny Loss')
-        plt.title('LR Finder eredménye (Legmeredekebb csökkenés)')
+        plt.title('LR Finder eredménye (EfficientNetV2B2 - Warm-up)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -266,11 +253,9 @@ class LRFinder(tf.keras.callbacks.Callback):
 def build_model(num_species=296):
     inputs = Input(shape=(224, 224, 3), dtype=tf.uint8)
     
-    # Castolás float32-re (0-255 tartomány). Az EfficientNetV2 saját magát skálázza belül!
     x = layers.Rescaling(scale=1.0, dtype='float32')(inputs)
     x = data_augmentation(x)
 
-    # Alapértelmezett ImageNet gerinc felépítése
     backbone = EfficientNetV2B2(include_top=False, weights='imagenet', input_shape=(224, 224, 3))
     backbone.trainable = False
 
@@ -281,7 +266,7 @@ def build_model(num_species=296):
     species_out = layers.Dense(num_species, activation='softmax', dtype='float32', name='species_head')(x)
     venomous_out = layers.Dense(1, activation='sigmoid', dtype='float32', name='venomous_head')(x)
 
-    return models.Model(inputs=inputs, outputs=[species_out, venomous_out]), backbone
+    return models.Model(inputs=inputs, outputs=[species_out, venomous_out])
 
 # ---------------------------------------------------------
 # 6. FŐPROGRAM (LR Finder futtatása)
@@ -293,12 +278,12 @@ if __name__ == "__main__":
     compile_kwargs = {
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
-        'metrics': {'species_head': ['accuracy', venomous_penalty_metric], 'venomous_head': 'accuracy'},
+        'metrics': {'species_head': ['accuracy'], 'venomous_head': ['accuracy']},
         'jit_compile': False
     }
 
-    print("\n=== LR Finder futtatása (200 lépés a legjobb Warm-up LR megtalálásához) ===")
-    temp_model, _ = build_model()
+    print("\n=== LR Finder futtatása a Warm-up fázishoz (200 lépés, 1e-6 -> 1e-1) ===")
+    temp_model = build_model()
     temp_model.compile(optimizer=Adam(learning_rate=1e-6), **compile_kwargs)
 
     lr_finder = LRFinder(start_lr=1e-6, end_lr=1e-1, max_steps=200)
@@ -306,5 +291,5 @@ if __name__ == "__main__":
 
     chosen_warmup_lr = lr_finder.get_optimal_lr(default_lr=DEFAULT_WARMUP_LR)
     print(f"\n[LRFinder] Megtalált optimális Warm-up LR: {chosen_warmup_lr:.2e}")
-    print(f"--> Ezt az értéket ({chosen_warmup_lr:.6f}) írd be a model.py WARMUP_LR változójába!")
+    print(f"--> Ezt az értéket ({chosen_warmup_lr:.6f}) írd be a model_EfficientNet.py WARMUP_LR változójába!")
     lr_finder.plot_and_save(PLOT_PATH, chosen_warmup_lr)
