@@ -1,0 +1,2 @@
+mi lenne ha tobb reteget olvasztanank ki a backbonebol es tanitanank? -> tippre tobb ido, de lehet jobb eredmeny
+mi lenne ha efficientnetv2-re visszaallnank a backbonenal inaturalist adathalmazon -> claude es gemini is inkabb ezt javasolja
