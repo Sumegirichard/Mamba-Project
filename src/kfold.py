@@ -3,7 +3,7 @@ from sklearn.model_selection import StratifiedKFold
 
 
 # 2. Stratified 5-Fold inicializálása (garantálja a class_id arányokat)
-n_splits = 5
+n_splits = 2
 skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 df_full = pd.read_csv("data/final_merged_metadata_with_new_labels.csv")
 
