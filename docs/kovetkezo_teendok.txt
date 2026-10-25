@@ -1,4 +1,5 @@
-keresztvalidáció nagyon költséges -> k = 2-re váltás, és lr finderek ujrafuttatása
+keresztvalidáció nagyon költséges -> k = 2-re váltás, és check
+lr finderek ujrafuttatása
 medium képeken tanítás
-inaturalist kiprobalasa
+inaturalist kiprobalasa check
 

@@ -30,7 +30,7 @@ Attekintett projektterulet
 A projekt egy kepalapu kigyofelismero rendszert valosit meg. Egy bemeneti
 kepbol ket celvaltozot kell becsulni:
 
-1. a kigyofaj azonositasat 296 osztaly valamelyikevel;
+1. a kigyofaj azonositasat 2000 osztaly valamelyikevel;
 2. azt, hogy a kigyo mergezo-e (binaris, 0 vagy 1).
 
 A ket feladat egy kozos kepi jellemzoteret hasznal, de kulon kimeneti fejjel
@@ -63,8 +63,8 @@ osztaly- es celvaltozo-imbalance lathato a tanitas elott.
 4. Adatfelosztas es keresztvalidacio
 Az eredeti kiserleti folyamat 80-20% aranyu tanito (train) es validacios (val)
 felosztast hasznalt. 
-A veglegesitett tervezesi dontes szerint a fix 80-20 split helyett csoportos
-keresztvalidaciora allunk at. A foldok kialakitasanal tovabbra is az
+A k=2 beallitas rovid kiprobalasa utan a robusztusabb k=5-os csoportos
+keresztvalidacio mellett dontottunk. A foldok kialakitasanal tovabbra is az
 observation_id a csoportositasi egyseg, igy egy megfigyeles kepei nem
 kerulhetnek kulon train es validacios foldba. A keresztvalidacio celja, hogy
 ne egyetlen veletlen felosztas eredmenyetol fuggjon a modell megitelese, es
@@ -79,6 +79,8 @@ dontesekhez felhasznalni.
 A split lépés eredeti kimenete:
 -data/train_split.csv
 -data/val_split.csv
+
+A k=5 keresztvalidacio soran foldonkent train es validation CSV-k keszulnek.
 
 5. Class ID ujraindexeles es TensorFlow kompatibilitas
 -------------------------
@@ -116,7 +118,7 @@ learning modell:
 - GlobalAveragePooling2D;
 - 256 neuron os Dense reteg ReLU aktivacioval;
 - 0.3 dropout;
-- species_head: 296 osztalyos softmax;
+- species_head: 2000 osztalyos softmax;
 - venomous_head: egy neuron os sigmoid.
 
 A ResNet50 valasztasanak tervezesi indoka a transfer learning: az ImageNet
@@ -127,6 +129,16 @@ valo finomhangolas es a tulillesztes, illetve a szamitasi koltseg kozott.
 
 A korabbi, sajat CNN-prototipus a mamba.py-ban megmaradt kiserleti vagy
 osszehasonlitasi modellkent; a jelenlegi fo tanitasi folyamat nem ezt hasznalja.
+
+A backbone-ok kivalasztasanal osszehasonlitottuk a ResNet es EfficientNet
+modelleket, valamint az InceptionV3-at is megvizsgaltuk. Az InceptionV3
+ertekelesenel kulon figyelmet forditottunk arra, hogyan viselkedik az
+iNaturalist (iNat) adathalmazon. Az osszehasonlitas alapjan a jelenlegi
+fo modell ResNet50 maradt.
+
+A projekt 2000 faj osztalyozasa es a tobbfeju (multi-head) halozat tanitasa
+jelentos szamitasi kapacitast igenyel. Ezert Google Colab Pro elofizetest
+hasznalunk a folyamatosabb es gyorsabb tanitasi futasok biztositasahoz.
 
 8. Multitask tanitas es vesztesegfuggvenyek
 -------------------------------------------
@@ -157,7 +169,7 @@ ertekeli. A hibas fajazonositas buntetese nagyobb, ha:
 
 A legnagyobb buntetes a mergezo valos osztaly nem mergezo osztallyal valo
 felrecserelese. Ez domain-specifikus mertek, nem a standard accuracy
-helyett hasznalando altalanos pontossag. A v_mapping jelenleg a 296 uj
+helyett hasznalando altalanos pontossag. A v_mapping jelenleg a 2000 uj
 class ID sorrendjehez kotott, ezert a mapping es a mappingbol szarmazo
 mergezesi cimkek egyutt kezelendo.
 
@@ -168,7 +180,7 @@ Ez nyilván a feladatból adódva jött.
 A learning rate-et nem kezzel, egyetlen tetszoleges ertekkel allitjuk be,
 hanem LR Finder segitsegevel keressuk meg. Az LR Finder fokozatosan noveli a
 learning rate-et, kozben naplozza a loss alakulását, majd a loss
-legmeredekebb csokkenesi tartomanyabol javasolt erteket ad. A keresest a
+legmeredekebb csokkenesi tartomanyabol valasztott erteket ad. A keresest a
 warm-up fazishoz es a backbone finomhangolasahoz kulon kell elvegezni, mert
 a ket fazis parameterterei es optimalizacios erzékenysége elter.
 
@@ -185,8 +197,8 @@ A vegso konfiguracioban ezert az LR Finder grafikonja, a foldonkenti
 training/validation logok es az early stopping eredmenye egyutt dont.
 
 Az LR Finder eredmenye nem garantalt globalis optimum: diagnosztikai
-javaslat. A javasolt learning rate-et normalis, validacios tanitassal kell
-visszaellenorizni. A Finder sajat futasa utan a modellt es az optimizer
+diagnosztikai eredmeny. A kivalasztott learning rate-et normalis, validacios
+tanitassal ellenorizzuk. A Finder sajat futasa utan a modellt es az optimizer
 allapotat a tenyleges tanitas elott ujra kell inicializalni.
 
 11. Utemezett tanitasi strategia: warm-up, small es medium kepek
@@ -242,7 +254,7 @@ A jelenlegi beallitasok:
 - epoch: kezdetben kiserleti maximum, a vegso erteket LR Finder,
   cross-validation es early stopping alapjan valasztjuk;
 - optimizer: Adam;
-- learning rate: LR Finder altal javasolt, fazisonkent kulon validalt ertek;
+- learning rate: LR Finder altal kivalasztott, fazisonkent kulon validalt ertek;
 - Dataset pipeline: map, shuffle, batch, prefetch;
 - shuffle buffer: 1000;
 - parhuzamos adatfeldolgozas: tf.data.AUTOTUNE;
@@ -261,60 +273,15 @@ kiirja:
 - a mergezesi dontes biztossagat.
 
 A mergezesi kuszob jelenleg 0.5. A faj azonositoja a legnagyobb softmax
-valoszinusegu index, amelyet a class_id_mapping.csv segitsegevel a jovoben
-fajnevhez kell visszaforditani.
-
-15. Jelenlegi eltérések es dokumentalt technikai kockazatok
-------------------------------------------------------------
-Az alabbitokat a tovabbi fejlesztes elott rendezni kell:
-
-1. Tanitasi es predikcios elofeldolgozas elterese
-   A model.py letterboxolt, 0-255 tartomanyu kepet ad a ResNet50
-   preprocess_input fuggvenyenek. A predict.py ezzel szemben kozvetlenul
-   resize-ol, 0 es 1 koze osztja az ertekeket, es nem alkalmaz letterboxinget
-   vagy preprocess_input-ot. Ez train/inference skew-ot okozhat, es rontja a
-   predikcio megbizhatosagat. A ket folyamatnak ugyanazt a kozos
-   elofeldolgozasi fuggvenyt kell hasznalnia.
-
-2. Modellfajl-nev elterese
-   A model.py .keras kiterjesztesu fajlba ment, a predict.py viszont .h5
-   fajlt tolt be. A tanitas es a predikcio jelenleg nem garantaltan ugyanazt
-   a modellartefaktumot hasznalja.
-
-3. Split-fajlnevek elterese
-   A train_test.py train_split.csv es val_split.csv fajlokat ir, a model.py
-   viszont train_split_fixed.csv es val_split_fixed.csv fajlokat olvas.
-   A fix_class_ids futtatasa es annak sorrendje jelenleg implicit elofeltetel.
-
-4. Mapping visszafejtes hianya
-   A predict.py csak az uj, 0-295 kozotti class ID-t irja ki. A felhasznalo
-   szamara hasznos fajnevhez a class_id_mapping.csv es az eredeti
-   class_id/fajnev kapcsolat egyuttes betoltese szukseges.
-
-5. Hardcoded mergezesi mapping
-   A v_mapping 296 elemre es az aktualis class-sorrendre van kezzel beirva.
-   Biztonsagosabb megoldas lenne a mergezesi cimket a class_id mappingbol
-   vagy kulon verziozott artefaktumbol eloallitani, hogy az adatok
-   valtozasakor ne maradjon csendes inkonzisztencia.
-
-6. Kepnevek utkozesenek lehetosege
-   A letterboxing.py csak a fajlnevet hasznalja a kimeneti nev generalasakor.
-   Kulon almappak azonos fajlnevei felulirhatjak egymast. A bemeneti
-   image_path-struktura ellenorzese vagy egyedi kimeneti nevstrategia kell.
-
-7. Hibakezeles
-   A letterboxing.py feldolgozasi hiba utan kiirja a hibat es tovabblep.
-   A tanitasi folyamat elott erdemes ellenorizni, hogy nem maradt-e ki kep,
-   es minden CSV-ben hivatkozott fajl tenylegesen letezik.
-
-16. Reprodukcio es kovetkezo lepesek
-------------------------------------
-Javasolt, dokumentalt futatasi sorrend:
+valoszinusegu index, amelyet a class_id_mapping.csv segitsegevel fajnevhez
+forditunk vissza.
+15. Reprodukcio
+---------------
 
 1. EDA es keputvonal-ellenorzes a nyers/merged metaadaton.
 2. merge.py futtatasa, ha a merged CSV meg nem aktualis.
 3. observation_id szerinti csoportos cross-validation foldok eloallitasa.
-4. fix_labels.py futtatasa a 0-295 kozotti suru class ID-khoz.
+4. fix_labels.py futtatasa a 0-1999 kozotti suru class ID-khoz.
 5. letterboxing.py futtatasa az elokeszitett kepek eloallitasahoz.
 6. LR Finder futtatasa a warm-up es a backbone-finetune fazishoz.
 7. Warm-up tanitas, majd small images tanitas.
@@ -326,35 +293,38 @@ Javasolt, dokumentalt futatasi sorrend:
 12. Predikcio csak azzal az elofeldolgozassal, amely a tanitassal azonos.
 13. class_id_mapping.csv hasznalata a modellazonosito visszafejtesehez.
 
-A jovoben erdemes a kovetkezoket is rogziteni:
-- modell, mapping es elofeldolgozasi konfiguracio egyuttes verzioja;
-- accuracy mellett macro F1, recall es mergezo osztalyra vonatkozo recall;
-- kiserleti beallitasok es eredmenyek kulon naploja.
-
-"A transfer learninghez jelenleg ImageNet súlyokkal előtanított ResNet50 modellt használunk, 
-ami kiváló általános vizuális jellemzőket biztosít. Egy jövőbeli fejlesztési (továbbfejlesztési) 
-irány lehet egy iNaturalist adathalmazon előtanított modell integrálása. Mivel az iNat kifejezetten
-flóra és fauna adatokra épül, sokkal jobban
-támogatná a kígyók finomszemcsés (fine-grained) biológiai jegyeinek felismerését."
-
 Osszegzes
 ---------
 A projekt fo tervezesi iranya egy ResNet50-re epulo, ketfeju multitask
-klasszifikator, amely a fajfelismerest es a mergezesi statuszt egy kozos
-kepi reprezentaciobol tanulja. A legfontosabb vedelmi dontes a
-group-alapu, observation_id szerinti cross-validation. A learning rate-et
+klasszifikator, amely 2000 faj felismereset es a mergezesi statuszt egy kozos
+kepi reprezentaciobol tanulja. A foldok kialakitasahoz k=5-os, group-alapu,
+observation_id szerinti cross-validationt hasznalunk. A learning rate-et
 LR Finderrel, az epoch-szamot a foldonkenti validacios gorbekkel es early
 stoppinggal valasztjuk. A tanitas staged folyamat: warm-up, small images,
-majd nehany epoch utan medium images.
+majd nehany epoch utan medium images. A tanitasi infrastruktura Google Colab
+Pro, a backbone-ok osszehasonlitasaban a ResNet, EfficientNet es InceptionV3
+szerepelt; az InceptionV3 iNat adathalmazon mutatott viselkedeset is
+kiertetuk.
 
 A Drive-bol szarmazo LR Finder gorbek, warm-up es finetune naplok, valamint
 training-loss abrazolasok a tanulasi dontesek dokumentalt bizonyitekai.
-A legfontosabb jelenlegi megbizhatosagi kockazat az elofeldolgozas es a
-modellfajl hasznalatanak elterese a tanitasi es predikcios kod kozott; ennek
-egysegesitese tovabbra is technikai prioritas.
+A warm-up learning rate-et LR Finderrel hataroztuk meg, az eredmenyeket
+naploztuk es diagramokon rogzitettuk. A diagramok az optimalis erteket a
+tobbi kiprobalt beallitassal is osszehasonlitjak.
 
-Megpróbáltuk a warmup learning ratehoz megtalálni az optimális értéket. Először ezt kézzel próbáltuk állítgatni
-,de hamar rájöttünk hogy LR optimalizaloval ezt meg tudjuk tenni és a diagramró le tudjuk olvasni. Ezeket logoltuk is 
-és megvannak a diagramok is hozzá. Majd Dani csinált két diagramot ami összehasonlítja az optimalist a többivel.
+Keresztvalidáció finomhangolása: A k-fold keresztvalidáció
+értékét először lecsökkentettük k=2-re, de gyorsan kiderült,
+hogy ez a felosztás nem ad elég robusztus eredményt a tanításhoz.
+Emiatt visszatértünk a jobban bevált k=5-ös beállításhoz.
+
+Infrastruktúra és erőforrások bővítése: Mivel a 2000 faj osztályozása
+és a többfejű (multi-head) hálózat tanítása komoly számítási kapacitást
+igényel, előfizettünk a Google Colab Pro-ra, biztosítva a folyamatos és gyorsabb futtatást.
+
+Backbone modellek kiértékelése: Megvizsgáltuk, hogy melyik
+gerinchálózat (backbone) lenne a legoptimálisabb a feladatra.
+Összehasonlítottuk a ResNet és az EfficientNet modelleket, illetve
+kielemeztük az InceptionV3-at is (különös tekintettel arra, hogyan
+viselkedik az iNat adathalmazon).
 
 https://danielhanchen.github.io/optimizers/learning_rate_range_finder.htm <-- az LR finder ötlete innen jött
