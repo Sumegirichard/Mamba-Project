@@ -85,8 +85,8 @@ else:
 BATCH_SIZE = 128
 WARMUP_EPOCHS = 10
 FINETUNE_EPOCHS = 30
-WARMUP_LR = 5e-4
-FINETUNE_LR = 1e-4 
+WARMUP_LR = 3.16e-3
+FINETUNE_LR = 2.99e-4 
 NUM_FOLDS = 5
 
 FOLDS_TO_RUN = [1]
@@ -237,7 +237,7 @@ def plot_training_history(history, save_path, fold):
     print(f"\n[+] Loss grafikon elmentve: {save_path}")
 
 def save_fold_result(history, result_path, fold):
-    key = 'val_species_head_venomous_penalty_metric'
+    key = 'val_loss'
     if history is None or key not in history.history: return
     best_idx = int(np.argmin(history.history[key]))
     result = {'fold': fold, 'best_epoch_in_this_run': best_idx + 1}
@@ -283,9 +283,9 @@ def train_fold(fold):
     }
 
     finetune_callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(str(fold_model_path), monitor='val_species_head_venomous_penalty_metric', mode='min', save_best_only=True, verbose=1),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor='val_species_head_venomous_penalty_metric', mode='min', factor=0.3, patience=2, min_lr=1e-6, min_delta=1e-3, verbose=1),
-        tf.keras.callbacks.EarlyStopping(monitor='val_species_head_venomous_penalty_metric', mode='min', patience=5, restore_best_weights=True, min_delta=1e-3, verbose=1),
+        tf.keras.callbacks.ModelCheckpoint(str(fold_model_path), monitor='val_loss', mode='min', save_best_only=True, verbose=1),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', mode='min', factor=0.3, patience=2, min_lr=1e-6, min_delta=1e-3, verbose=1),
+        tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', patience=5, restore_best_weights=True, min_delta=1e-3, verbose=1),
         tf.keras.callbacks.CSVLogger(str(fold_finetune_log), append=True)
     ]
 
@@ -311,7 +311,7 @@ def train_fold(fold):
             model.compile(optimizer=tf.keras.optimizers.AdamW(learning_rate=WARMUP_LR, weight_decay=1e-4, clipnorm=1.0), **compile_kwargs)
             warmup_callbacks = [
                 tf.keras.callbacks.CSVLogger(str(fold_warmup_log), append=True),
-                tf.keras.callbacks.EarlyStopping(monitor='val_species_head_venomous_penalty_metric', mode='min', patience=2, restore_best_weights=True, verbose=1)
+                tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', patience=2, restore_best_weights=True, verbose=1)
             ]
             model.fit(train_ds, validation_data=val_ds, epochs=WARMUP_EPOCHS, callbacks=warmup_callbacks)
             model.save(str(fold_warmup_model_path))
