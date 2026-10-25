@@ -9,8 +9,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import tensorflow_hub as hub
-from tensorflow.keras import layers, models, Input, mixed_precision
-from tensorflow.keras.optimizers import Adam
+
+# TF.KERAS helyett a garantáltan Keras 2-t használó tf_keras modul
+import tf_keras as keras
+from tf_keras import layers, models, Input, mixed_precision
+from tf_keras.optimizers import Adam
 
 # Véletlenszám-generátorok fixálása a reprodukálhatóságért
 tf.random.set_seed(41)
@@ -20,9 +23,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # 0. KOMPATIBILITÁS ÉS HARDVERES GYORSÍTÁS (MIXED FP16)
 # ---------------------------------------------------------
 try:
-    register_serializable = tf.keras.utils.register_keras_serializable
+    register_serializable = keras.utils.register_keras_serializable
 except AttributeError:
-    from keras.saving import register_keras_serializable as register_serializable
+    from tf_keras.saving import register_keras_serializable as register_serializable
 
 mixed_precision.set_global_policy('mixed_float16')
 print("Aktív számítási pontosság:", mixed_precision.global_policy().name)
@@ -57,7 +60,6 @@ if IN_COLAB:
     LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
     LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     
-    # Elegendő a Fold 1-et használni az LR teszthez
     src_csv = FOLDS_SOURCE_DIR / "fold_1_train.csv"
     dst_csv = LOCAL_FOLDS_DIR / "fold_1_train.csv"
     if src_csv.exists() and not dst_csv.exists():
@@ -95,7 +97,7 @@ def process_image(file_path, class_id, venomous):
     img.set_shape([224, 224, 3])
     return img, {'species_head': class_id, 'venomous_head': venomous}
 
-data_augmentation = tf.keras.Sequential([
+data_augmentation = keras.Sequential([
     layers.RandomFlip("horizontal", dtype='float32'),
     layers.RandomRotation(0.15, fill_mode="reflect", dtype='float32'),
     layers.RandomZoom(0.1, fill_mode="reflect", dtype='float32'),
@@ -125,7 +127,7 @@ def create_dataset(csv_file, img_dir, batch_size, is_training=True):
     return ds
 
 # ---------------------------------------------------------
-# 3. EGYEDI LOSS ÉS METRIKA FÜGGVÉNYEK
+# 3. EGYEDI LOSS FÜGGVÉNYEK
 # ---------------------------------------------------------
 v_mapping = tf.constant([
     0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0,
@@ -144,48 +146,6 @@ v_mapping = tf.constant([
 v_mapping_float = tf.cast(v_mapping, tf.float32)
 
 @register_serializable()
-class SparseMacroF1(tf.keras.metrics.Metric):
-    def __init__(self, name='macro_f1', num_classes=296, **kwargs):
-        super(SparseMacroF1, self).__init__(name=name, **kwargs)
-        self.num_classes = num_classes
-        self.tp = self.add_weight(name='tp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
-        self.fp = self.add_weight(name='fp', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
-        self.fn = self.add_weight(name='fn', shape=(num_classes,), initializer='zeros', dtype=tf.float32)
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_true = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
-        y_pred = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-        
-        y_true_1hot = tf.one_hot(y_true, depth=self.num_classes, dtype=tf.float32)
-        y_pred_1hot = tf.one_hot(y_pred, depth=self.num_classes, dtype=tf.float32)
-        
-        self.tp.assign_add(tf.reduce_sum(y_true_1hot * y_pred_1hot, axis=0))
-        self.fp.assign_add(tf.reduce_sum((1.0 - y_true_1hot) * y_pred_1hot, axis=0))
-        self.fn.assign_add(tf.reduce_sum(y_true_1hot * (1.0 - y_pred_1hot), axis=0))
-
-    def result(self):
-        epsilon = tf.keras.backend.epsilon()
-        precision = self.tp / (self.tp + self.fp + epsilon)
-        recall = self.tp / (self.tp + self.fn + epsilon)
-        f1 = 2.0 * precision * recall / (precision + recall + epsilon)
-        return tf.reduce_mean(f1)
-
-    def reset_state(self):
-        self.tp.assign(tf.zeros(self.num_classes, dtype=tf.float32))
-        self.fp.assign(tf.zeros(self.num_classes, dtype=tf.float32))
-        self.fn.assign(tf.zeros(self.num_classes, dtype=tf.float32))
-
-@register_serializable()
-def venomous_penalty_metric(y_true, y_pred):
-    y_true_class = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
-    y_pred_class = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-    v_y = tf.gather(v_mapping_float, y_true_class)
-    v_y_hat = tf.gather(v_mapping_float, y_pred_class)
-    base_penalty = 1.0 + 4.0 * v_y + (1.0 - 4.0 * v_y) * v_y_hat
-    is_wrong = tf.cast(tf.not_equal(y_true_class, y_pred_class), tf.float32)
-    return tf.reduce_mean(base_penalty * is_wrong)
-
-@register_serializable()
 def cost_sensitive_species_loss(y_true, y_pred):
     y_pred = tf.cast(y_pred, tf.float32)
     y_true_int = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
@@ -194,7 +154,7 @@ def cost_sensitive_species_loss(y_true, y_pred):
     weight_if_venomous = 5.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
     weight_if_non_venomous = 1.0 * (1.0 - v_y_pred) + 2.0 * v_y_pred
     weight = v_y * weight_if_venomous + (1.0 - v_y) * weight_if_non_venomous
-    scce = tf.keras.losses.sparse_categorical_crossentropy(y_true_int, y_pred)
+    scce = keras.losses.sparse_categorical_crossentropy(y_true_int, y_pred)
     return tf.reduce_mean(scce * weight)
 
 @register_serializable()
@@ -202,13 +162,13 @@ def weighted_binary_venomous_loss(y_true, y_pred):
     y_true = tf.cast(tf.reshape(y_true, [-1, 1]), tf.float32)
     y_pred = tf.cast(tf.reshape(y_pred, [-1, 1]), tf.float32)
     weights = tf.reshape(1.0 + 4.0 * y_true, [-1])
-    bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+    bce = keras.losses.binary_crossentropy(y_true, y_pred)
     return tf.reduce_mean(bce * weights)
 
 # ---------------------------------------------------------
-# 4. AUTOMATIKUS LEARNING RATE FINDER CALLBACK
+# 4. ÚJ, PONTOSABB LEARNING RATE FINDER
 # ---------------------------------------------------------
-class LRFinder(tf.keras.callbacks.Callback):
+class LRFinder(keras.callbacks.Callback):
     def __init__(self, start_lr=1e-6, end_lr=1e-1, max_steps=200):
         super().__init__()
         self.start_lr = start_lr
@@ -225,7 +185,7 @@ class LRFinder(tf.keras.callbacks.Callback):
         if hasattr(self.model.optimizer, 'learning_rate'):
             self.model.optimizer.learning_rate.assign(lr)
         else:
-            tf.keras.backend.set_value(self.model.optimizer.lr, lr)
+            keras.backend.set_value(self.model.optimizer.lr, lr)
 
     def on_train_batch_begin(self, batch, logs=None):
         lr = self.start_lr * (self.factor ** self.step)
@@ -252,14 +212,28 @@ class LRFinder(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
     def get_optimal_lr(self, default_lr=5e-4):
-        if len(self.smoothed_losses) < 30:
+        if len(self.smoothed_losses) < 50:
             return default_lr
-        losses_arr = np.array(self.smoothed_losses[10:-5])
-        lrs_arr = np.array(self.lrs[10:-5])
+            
+        # Levágjuk a kezdeti instabil szakaszt és a végét
+        skip_begin = 30
+        skip_end = 5
+        
+        losses_arr = np.array(self.smoothed_losses[skip_begin:-skip_end])
+        lrs_arr = np.array(self.lrs[skip_begin:-skip_end])
+        
+        if len(losses_arr) < 10:
+            return default_lr
+            
+        # Mozgóátlag a gradienseken a tartós esés megtalálásához
         gradients = np.gradient(losses_arr)
-        min_grad_idx = int(np.argmin(gradients))
+        smoothed_gradients = np.convolve(gradients, np.ones(10)/10, mode='valid')
+        
+        pad = 10 // 2
+        min_grad_idx = int(np.argmin(smoothed_gradients)) + pad
+        
         optimal_lr = float(lrs_arr[min_grad_idx])
-        return float(np.clip(optimal_lr, 1e-4, 1e-2))
+        return float(np.clip(optimal_lr, 1e-5, 1e-2))
 
     def plot_and_save(self, save_path, suggested_lr):
         plt.figure(figsize=(10, 5))
@@ -269,7 +243,7 @@ class LRFinder(tf.keras.callbacks.Callback):
         plt.xscale('log')
         plt.xlabel('Tanulási ráta (Log skála)')
         plt.ylabel('Költségérzékeny Loss')
-        plt.title('LR Finder eredménye (TF Hub iNat Inception V3 - Warm-up)')
+        plt.title('LR Finder eredménye (TF Hub Inception V3 - Warm-up)')
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -296,7 +270,7 @@ def build_model(num_species=296):
     s_out = layers.Dense(num_species, activation='softmax', dtype='float32', name='species_head')(x)
     v_out = layers.Dense(1, activation='sigmoid', dtype='float32', name='venomous_head')(x)
 
-    return models.Model(inputs=inputs, outputs=[s_out, v_out]), backbone
+    return models.Model(inputs=inputs, outputs=[s_out, v_out])
 
 # ---------------------------------------------------------
 # 6. FŐPROGRAM (LR Finder futtatása)
@@ -305,18 +279,16 @@ if __name__ == "__main__":
     print(f"Adatok betöltése innen: {DATA_DIR} | Képek innen: {IMAGE_DIR}")
     train_ds = create_dataset(DATA_DIR / "fold_1_train.csv", IMAGE_DIR, BATCH_SIZE, is_training=True)
 
+    # Az LR finderhez elég a loss függvényeket használni
     compile_kwargs = {
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
-        'metrics': {
-            'species_head': ['accuracy', SparseMacroF1(), venomous_penalty_metric], 
-            'venomous_head': ['accuracy']
-        },
+        'metrics': {'species_head': ['accuracy'], 'venomous_head': ['accuracy']},
         'jit_compile': False
     }
 
     print("\n=== LR Finder futtatása a Warm-up fázishoz (200 lépés, 1e-6 -> 1e-1) ===")
-    temp_model, _ = build_model()
+    temp_model = build_model()
     temp_model.compile(optimizer=Adam(learning_rate=1e-6), **compile_kwargs)
 
     lr_finder = LRFinder(start_lr=1e-6, end_lr=1e-1, max_steps=200)
