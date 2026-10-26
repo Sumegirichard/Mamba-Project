@@ -233,14 +233,25 @@ class LRFinder(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
     def get_optimal_lr(self, default_lr=5e-4):
-        if len(self.smoothed_losses) < 30:
+        if len(self.smoothed_losses) < 40:
             return default_lr
-        losses_arr = np.array(self.smoothed_losses[10:-5])
-        lrs_arr = np.array(self.lrs[10:-5])
+        
+        # Kihagyjuk az első 25 lépést (a kezdeti púp miatt) és az utolsó 5-öt
+        skip_begin = 25
+        skip_end = 5
+        
+        losses_arr = np.array(self.smoothed_losses[skip_begin:-skip_end])
+        lrs_arr = np.array(self.lrs[skip_begin:-skip_end])
+        
+        # Meredekség (gradiens) kiszámítása
         gradients = np.gradient(losses_arr)
+        
+        # A legmeredekebb esés pontjának megkeresése
         min_grad_idx = int(np.argmin(gradients))
         optimal_lr = float(lrs_arr[min_grad_idx])
-        return float(np.clip(optimal_lr, 1e-4, 1e-2))
+        
+        # Eltávolítva a hibás np.clip korlátozás!
+        return optimal_lr
 
     def plot_and_save(self, save_path, suggested_lr):
         plt.figure(figsize=(10, 5))
