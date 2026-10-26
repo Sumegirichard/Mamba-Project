@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-LR finder a WARM-UP fázishoz (Swin Transformer, fagyott backbone).
+LR finder a WARM-UP fázishoz (KerasHub Swin Transformer, fagyott backbone).
 A kiírt WARMUP_LR értéket írd be a model_swin_224.py WARMUP_LR változójába.
 """
 import os
@@ -16,7 +16,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras import layers, models, Input, mixed_precision
-from transformers import TFSwinModel
+import keras_hub
 
 SEED = 42
 tf.keras.utils.set_random_seed(SEED)
@@ -280,7 +280,7 @@ def report_and_save(analyses, final_lr, notes, json_key, constant_name):
         json.dump({json_key: final_lr, 'runs': analyses, 'notes': notes}, fh, indent=2, ensure_ascii=False)
 
 # ---------------------------------------------------------
-# 6. SWIN MODELL ÉPÍTÉSE
+# 6. KERASHUB SWIN MODELL ÉPÍTÉSE (224x224)
 # ---------------------------------------------------------
 def make_augmentation():
     return tf.keras.Sequential([
@@ -293,18 +293,17 @@ def build_model(num_species=NUM_CLASSES):
     inputs = Input(shape=(224, 224, 3), dtype=tf.uint8)
     
     x = make_augmentation()(tf.cast(inputs, tf.float32))
-    
-    # Swin/HuggingFace specifikus előfeldolgozás
-    x = x / 255.0
-    mean = tf.constant([0.485, 0.456, 0.406], shape=[1, 1, 1, 3], dtype=tf.float32)
-    std = tf.constant([0.229, 0.224, 0.225], shape=[1, 1, 1, 3], dtype=tf.float32)
-    x = (x - mean) / std
 
-    backbone = TFSwinModel.from_pretrained("microsoft/swin-base-patch4-window7-224", from_pt=True)
+    print("\n[+] Natív KerasHub Swin Transformer Backbone betöltése (swin_base_patch4_window7_224)...")
+    backbone = keras_hub.models.SwinTransformerBackbone.from_preset(
+        "swin_base_patch4_window7_224",
+        load_weights=True,
+        image_shape=(224, 224, 3)
+    )
     backbone.trainable = False
 
-    outputs = backbone(pixel_values=x, training=False)
-    x = outputs.pooler_output
+    x = backbone(x)
+    x = layers.GlobalAveragePooling2D()(x)
 
     x = layers.Dense(512, activation='gelu')(x)
     x = layers.Dropout(0.3)(x)
@@ -339,7 +338,7 @@ def main():
 
     final_lr, notes = aggregate_runs(analyses, DEFAULT_LR)
     report_and_save(analyses, final_lr, notes, 'warmup_lr', 'WARMUP_LR')
-    plot_and_save(finders, analyses, final_lr, PLOT_PATH, 'LR Finder eredménye (Swin Transformer - Warm-up)', 'Ajánlott Warm-up LR')
+    plot_and_save(finders, analyses, final_lr, PLOT_PATH, 'LR Finder eredménye (KerasHub Swin - Warm-up)', 'Ajánlott Warm-up LR')
 
 if __name__ == "__main__":
     main()
