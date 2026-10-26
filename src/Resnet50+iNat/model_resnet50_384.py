@@ -15,7 +15,8 @@ import tensorflow as tf
 import tensorflow_hub as hub
 from tensorflow.keras import layers, models, Input, mixed_precision
 from tensorflow.keras.optimizers import Adam
-
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications.resnet50 import preprocess_input
 # Véletlenszám-generátorok fixálása a reprodukálhatóságért
 tf.random.set_seed(42)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -44,7 +45,7 @@ except ImportError:
 if IN_COLAB:
     drive.mount('/content/drive')
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
-    
+
     # 384-es képek ZIP útvonala
     ZIP_PATH = DRIVE_DIR / 'Databank/Train data/train_images_384_letterboxed.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
@@ -96,7 +97,8 @@ EARLY_STOPPING_MIN_DELTA = 1e-3
 
 FOLDS_TO_RUN = [1]
 
-INAT_RESNET_URL = "https://tfhub.dev/google/inaturalist/resnet_v1_50/feature_vector/1"
+# Kaggle Models letöltési URL-je a tömörített TF-Hub kompatibilis paraméterrel
+INAT_RESNET_URL = "https://www.kaggle.com/models/google/inaturalist/TensorFlow2/resnet-v1-50-feature-vector/1?tf-hub-format=compressed"
 
 # ---------------------------------------------------------
 # 2. GYORS ADATBETÖLTŐ PIPELINE
@@ -159,10 +161,10 @@ class SparseMacroF1(tf.keras.metrics.Metric):
     def update_state(self, y_true, y_pred, sample_weight=None):
         y_true = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
         y_pred = tf.cast(tf.argmax(y_pred, axis=-1), tf.int32)
-        
+
         y_true_1hot = tf.one_hot(y_true, depth=self.num_classes, dtype=tf.float32)
         y_pred_1hot = tf.one_hot(y_pred, depth=self.num_classes, dtype=tf.float32)
-        
+
         self.tp.assign_add(tf.reduce_sum(y_true_1hot * y_pred_1hot, axis=0))
         self.fp.assign_add(tf.reduce_sum((1.0 - y_true_1hot) * y_pred_1hot, axis=0))
         self.fn.assign_add(tf.reduce_sum(y_true_1hot * (1.0 - y_pred_1hot), axis=0))
@@ -211,13 +213,16 @@ def weighted_binary_venomous_loss(y_true, y_pred):
 def build_model_384(num_species=296):
     inputs = Input(shape=(IMAGE_SIZE, IMAGE_SIZE, 3), dtype=tf.uint8)
     
-    x = layers.Rescaling(scale=1./255, dtype='float32')(inputs)
+    # Keras beépített preprocesszálása a ResNet50-hez (a Rescaling helyett ez a hivatalos)
+    x = layers.Lambda(lambda img: preprocess_input(tf.cast(img, tf.float32)))(inputs)
     x = data_augmentation(x)
 
-    print(f"\n[+] Backbone letöltése/betöltése TF Hub-ról (ResNet50 iNaturalist) 384x384 bemenethez...")
-    backbone = hub.KerasLayer(INAT_RESNET_URL, trainable=True, dtype="float32", name='resnet50_inat')
+    print(f"\n[+] Keras beépített ResNet50 betöltése (384x384 bemenethez)...")
+    backbone = ResNet50(include_top=False, weights='imagenet', input_shape=(IMAGE_SIZE, IMAGE_SIZE, 3))
+    backbone.trainable = True
     
     x = backbone(x)
+    x = layers.GlobalAveragePooling2D()(x) # Ez elengedhetetlen a Keras Applications modellnél!
     x = layers.Dense(512, activation='relu')(x)
     x = layers.Dropout(0.3)(x)
 
@@ -277,10 +282,10 @@ def train_fold(fold):
 
     train_csv = DATA_DIR / f"fold_{fold}_train.csv"
     val_csv = DATA_DIR / f"fold_{fold}_val.csv"
-    
+
     # A korábbi, 224-es képeken betanított modell útvonala
     PREVIOUS_MODEL_PATH = DRIVE_DIR / f"snake_resnet50_model_fold_{fold}.keras"
-    
+
     # Új mentési útvonalak a 384-es modellhez
     fold_model_path = DRIVE_DIR / f"snake_resnet50_model_384_fold_{fold}.keras"
     fold_finetune_log = LOGS_DIR / f"resnet_384_finetune_log_fold_{fold}.csv"
@@ -294,7 +299,7 @@ def train_fold(fold):
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
         'metrics': {
-            'species_head': ['accuracy', SparseMacroF1(), venomous_penalty_metric], 
+            'species_head': ['accuracy', SparseMacroF1(), venomous_penalty_metric],
             'venomous_head': ['accuracy']
         },
         'jit_compile': False
@@ -329,16 +334,16 @@ def train_fold(fold):
 
     print(f"\n=== FINOMHANGOLÁS A 384x384 KÉPEKEN (Fold {fold}, {FINETUNE_EPOCHS} epoch) ===")
     model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-    
+
     history = model.fit(
-        train_ds, 
-        validation_data=val_ds, 
-        epochs=FINETUNE_EPOCHS, 
+        train_ds,
+        validation_data=val_ds,
+        epochs=FINETUNE_EPOCHS,
         callbacks=finetune_callbacks
     )
 
     print(f"\n[Fold {fold} KÉSZ] A nagyképes (384x384) modell elmentve ide: {fold_model_path}")
-    
+
     if history is not None:
         plot_training_history(history, str(fold_plot_path), fold)
         save_fold_result(history, str(fold_result_path), fold)
@@ -351,13 +356,13 @@ def train_fold(fold):
 # ---------------------------------------------------------
 if __name__ == "__main__":
     print(f"Képek beolvasása innen: {IMAGE_DIR}")
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--fold", type=int, nargs="+")
     args, _ = parser.parse_known_args()
 
     folds = args.fold if args.fold else FOLDS_TO_RUN
-    
+
     print(f"Tanítandó fold(ok): {folds}")
     for f in folds:
         train_fold(f)
