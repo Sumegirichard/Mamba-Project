@@ -277,17 +277,21 @@ def create_best_model_checkpoint(model_path):
 # ---------------------------------------------------------
 def train_fold(fold):
     print("\n" + "="*60)
-    print(f"=== {fold}. FOLD TANÍTÁSA INDUL (ResNet50 TF Hub 384x384 Progressive Resizing) ===")
+    print(f"=== {fold}. FOLD TANÍTÁSA INDUL (ResNet50 384x384 Progressive Resizing) ===")
     print("="*60)
 
     train_csv = DATA_DIR / f"fold_{fold}_train.csv"
     val_csv = DATA_DIR / f"fold_{fold}_val.csv"
+    
+    # FONTOS MÓDOSÍTÁS: A képen látható 'resnet' almappa elérése
+    RESNET_MODELS_DIR = DRIVE_DIR / 'models' / 'resnet'
+    RESNET_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # A korábbi, 224-es képeken betanított modell útvonala
-    PREVIOUS_MODEL_PATH = DRIVE_DIR / f"snake_resnet50_model_fold_{fold}.keras"
-
-    # Új mentési útvonalak a 384-es modellhez
-    fold_model_path = DRIVE_DIR / f"snake_resnet50_model_384_fold_{fold}.keras"
+    # A korábbi, 224-es ResNet súlyfájl útvonala a resnet mappából
+    PREVIOUS_WEIGHTS_PATH = RESNET_MODELS_DIR / f"snake_resnet50_model_fold_{fold}.weights.h5"
+    
+    # Új mentési útvonalak a 384-es modellhez (szintén ide mentjük, vagy a Logs-ba)
+    fold_model_weights_path = RESNET_MODELS_DIR / f"snake_resnet50_model_384_fold_{fold}.weights.h5"
     fold_finetune_log = LOGS_DIR / f"resnet_384_finetune_log_fold_{fold}.csv"
     fold_plot_path = LOGS_DIR / f"resnet_384_training_loss_plot_fold_{fold}.png"
     fold_result_path = LOGS_DIR / f"resnet_384_fold_{fold}_result.json"
@@ -299,26 +303,35 @@ def train_fold(fold):
         'loss': {'species_head': cost_sensitive_species_loss, 'venomous_head': weighted_binary_venomous_loss},
         'loss_weights': {'species_head': 1.0, 'venomous_head': 0.2},
         'metrics': {
-            'species_head': ['accuracy', SparseMacroF1(), venomous_penalty_metric],
+            'species_head': ['accuracy', SparseMacroF1(), venomous_penalty_metric], 
             'venomous_head': ['accuracy']
         },
         'jit_compile': False
     }
 
-    # Felépítjük a modellt az új, nagyobb bemenettel
+    # 1. Felépítjük a modellt az új, 384x384-es bemenettel (Keras Applications ResNet50)
     model, backbone = build_model_384()
 
-    # SÚLYOK ÁTEMELÉSE A 224-es MODELLBŐL
-    if PREVIOUS_MODEL_PATH.exists():
-        print(f"\n[+] Korábbi 224x224-es modell súlyainak átemelése innen: {PREVIOUS_MODEL_PATH}")
-        model.load_weights(str(PREVIOUS_MODEL_PATH), by_name=True, skip_mismatch=True)
+    # 2. SÚLYOK BETÖLTÉSE A .weights.h5 FÁJLMENTŐBŐL
+    if PREVIOUS_WEIGHTS_PATH.exists():
+        print(f"\n[+] Korábbi 224x224-es ResNet súlyok betöltése innen: {PREVIOUS_WEIGHTS_PATH}")
+        # A Keras build után a load_weights közvetlenül beilleszti a 224-es tudást a 384-es hálóba
+        model.load_weights(str(PREVIOUS_WEIGHTS_PATH))
     else:
-        print(f"\n[!] HIBA: Nem található a kiindulási 224-es modell itt: {PREVIOUS_MODEL_PATH}")
-        print("Először futtasd le az eredeti szkriptet a 224-es képekkel!")
+        print(f"\n[!] HIBA: Nem található a kiindulási súlyfájl itt: {PREVIOUS_WEIGHTS_PATH}")
+        print("Ellenőrizd, hogy a resnet mappában létezik-e a fájl!")
         return
 
+    # Módosítjuk a Checkpointot is, hogy az új struktúrához igazodva .weights.h5-ként mentsen
     finetune_callbacks = [
-        create_best_model_checkpoint(fold_model_path),
+        tf.keras.callbacks.ModelCheckpoint(
+            str(fold_model_weights_path), 
+            monitor='val_loss', 
+            mode='min', 
+            save_best_only=True, 
+            save_weights_only=True, # Fontos, mert csak a súlyokat mentjük!
+            verbose=1
+        ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor='val_loss',
             mode='min',
@@ -334,16 +347,16 @@ def train_fold(fold):
 
     print(f"\n=== FINOMHANGOLÁS A 384x384 KÉPEKEN (Fold {fold}, {FINETUNE_EPOCHS} epoch) ===")
     model.compile(optimizer=Adam(learning_rate=FINETUNE_LR), **compile_kwargs)
-
+    
     history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=FINETUNE_EPOCHS,
+        train_ds, 
+        validation_data=val_ds, 
+        epochs=FINETUNE_EPOCHS, 
         callbacks=finetune_callbacks
     )
 
-    print(f"\n[Fold {fold} KÉSZ] A nagyképes (384x384) modell elmentve ide: {fold_model_path}")
-
+    print(f"\n[Fold {fold} KÉSZ] A nagyképes ResNet súlyok elmentve ide: {fold_model_weights_path}")
+    
     if history is not None:
         plot_training_history(history, str(fold_plot_path), fold)
         save_fold_result(history, str(fold_result_path), fold)
