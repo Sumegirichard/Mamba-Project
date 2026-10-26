@@ -96,7 +96,7 @@ EARLY_STOPPING_MIN_DELTA = 1e-3
 
 FOLDS_TO_RUN = [1]
 
-INAT_RESNET_URL = "https://tfhub.dev/google/inaturalist/resnet_v1_50/feature_vector/5"
+INAT_RESNET_URL = "https://tfhub.dev/google/inaturalist/resnet_v1_50/feature_vector/1"
 
 # ---------------------------------------------------------
 # 2. GYORS ADATBETÖLTŐ PIPELINE
