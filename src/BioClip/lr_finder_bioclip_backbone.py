@@ -30,6 +30,14 @@ SEED = 42
 # ---------------------------------------------------------
 # 1. KÖRNYEZET ÉS ADATÚTVONALAK
 # ---------------------------------------------------------
+# Csoportos (observation_id szerinti) foldok és ugyanaz az augmentáció, mint a model_bioclip.py-ban.
+# A kimenet (log/JSON, a backbone finderhez a bemelegítési súlyok) a model_bioclip.py mappáit használja.
+FOLDS_NAME = 'folds_grouped'
+AUGMENTATION = 'strong'   # 'basic' vagy 'strong'; egyezzen a model_bioclip.py-ban beállítottal
+_TAG = '_aug' if AUGMENTATION == 'strong' else ''
+MODELS_SUBDIR = 'bioclip_grouped' + _TAG
+LOGS_SUBDIR = 'BioClip_grouped' + _TAG
+
 IMAGE_FOLDER_NAME = "train_images_224_letterboxed"
 CSV_NAME = "fold_1_train.csv"
 
@@ -44,9 +52,9 @@ if IN_COLAB:
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
     ZIP_PATH = DRIVE_DIR / f'Databank/Train data/{IMAGE_FOLDER_NAME}.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
-    FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / 'folds'
-    LOGS_DIR = DRIVE_DIR / 'Logs'
-    BIOCLIP_MODELS_DIR = DRIVE_DIR / 'models' / 'bioclip'
+    FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / FOLDS_NAME
+    LOGS_DIR = DRIVE_DIR / 'Logs' / LOGS_SUBDIR
+    BIOCLIP_MODELS_DIR = DRIVE_DIR / 'models' / MODELS_SUBDIR
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     if ZIP_PATH.exists() and not (EXTRACT_PATH / IMAGE_FOLDER_NAME).exists():
@@ -55,7 +63,7 @@ if IN_COLAB:
         with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
             zip_ref.extractall(EXTRACT_PATH)
 
-    LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
+    LOCAL_FOLDS_DIR = Path(f'/content/data_local/{FOLDS_NAME}')
     LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     src_csv, dst_csv = FOLDS_SOURCE_DIR / CSV_NAME, LOCAL_FOLDS_DIR / CSV_NAME
     if src_csv.exists() and not dst_csv.exists(): shutil.copy2(src_csv, dst_csv)
@@ -65,10 +73,10 @@ if IN_COLAB:
 else:
     matplotlib.use("Agg")
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    DATA_DIR = PROJECT_ROOT / "data" / "folds"
+    DATA_DIR = PROJECT_ROOT / "data" / FOLDS_NAME
     IMAGE_DIR = PROJECT_ROOT / "data" / IMAGE_FOLDER_NAME
     LOGS_DIR = PROJECT_ROOT / "plots"
-    BIOCLIP_MODELS_DIR = PROJECT_ROOT / "models" / "bioclip"
+    BIOCLIP_MODELS_DIR = PROJECT_ROOT / "models" / MODELS_SUBDIR
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 WARMUP_WEIGHTS_PATH = BIOCLIP_MODELS_DIR / "bioclip_warmup_fold_1.pth"
@@ -125,9 +133,18 @@ class SnakeDataset(Dataset):
         return image, torch.tensor(row['class_id'], dtype=torch.long), torch.tensor(row['MIVS'], dtype=torch.float32)
 
 normalize = transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
-train_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(), transforms.RandomRotation(15), transforms.ToTensor(), normalize
-])
+if AUGMENTATION == 'strong':
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224, scale=(0.5, 1.0), ratio=(0.75, 1.3333)),
+        transforms.RandomHorizontalFlip(), transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
+        transforms.ToTensor(), normalize,
+        transforms.RandomErasing(p=0.25, scale=(0.02, 0.1)),
+    ])
+else:
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(), transforms.RandomRotation(15), transforms.ToTensor(), normalize
+    ])
 
 # ---------------------------------------------------------
 # 4. MODELL ÉS KÖLTSÉGFÜGGVÉNY (azonos a model_bioclip.py-val)
