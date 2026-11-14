@@ -8,3 +8,6 @@ data/train_images_large/
 data/train_images_224_letterboxed
 data/train_images_224_letterboxed.zip
 *.zip
+*.h5
+*.pth
+plots/bioclip_384_finetune_log_fold_1.csv

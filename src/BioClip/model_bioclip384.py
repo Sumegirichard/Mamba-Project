@@ -35,6 +35,14 @@ torch.manual_seed(SEED); np.random.seed(SEED)
 # ---------------------------------------------------------
 IMAGE_FOLDER_NAME = "train_images_384_letterboxed"
 
+# Csoportos (observation_id szerinti) foldok: a sima 'folds' mappa csoportos szivárgást tartalmazott.
+# Az új futás külön mappába ment, így nem írja felül és nem hagyja ki a régi súlyokat/logokat.
+FOLDS_NAME = 'folds_grouped'
+AUGMENTATION = 'strong'   # 'basic' (tükrözés + forgatás) vagy 'strong' (lásd lent); külön kimeneti mappába ment
+_TAG = '_aug' if AUGMENTATION == 'strong' else ''
+MODELS_SUBDIR = 'bioclip_grouped' + _TAG
+LOGS_SUBDIR = 'BioClip_grouped' + _TAG
+
 IN_COLAB = True
 try:
     from google.colab import drive
@@ -46,9 +54,9 @@ if IN_COLAB:
     DRIVE_DIR = Path('/content/drive/MyDrive/Mamba')
     ZIP_PATH = DRIVE_DIR / f'Databank/Train data/{IMAGE_FOLDER_NAME}.zip'
     EXTRACT_PATH = Path('/content/Databank/Train data')
-    FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / 'folds'
-    LOGS_DIR = DRIVE_DIR / 'Logs'
-    BIOCLIP_MODELS_DIR = DRIVE_DIR / 'models' / 'bioclip'
+    FOLDS_SOURCE_DIR = DRIVE_DIR / 'CSV files' / FOLDS_NAME
+    LOGS_DIR = DRIVE_DIR / 'Logs' / LOGS_SUBDIR
+    BIOCLIP_MODELS_DIR = DRIVE_DIR / 'models' / MODELS_SUBDIR
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     if ZIP_PATH.exists() and not (EXTRACT_PATH / IMAGE_FOLDER_NAME).exists():
@@ -60,7 +68,7 @@ if IN_COLAB:
     elif not ZIP_PATH.exists():
         print(f"FIGYELEM: A ZIP nem található: {ZIP_PATH}")
 
-    LOCAL_FOLDS_DIR = Path('/content/data_local/folds')
+    LOCAL_FOLDS_DIR = Path(f'/content/data_local/{FOLDS_NAME}')
     LOCAL_FOLDS_DIR.mkdir(parents=True, exist_ok=True)
     if FOLDS_SOURCE_DIR.exists():
         for i in range(1, 6):
@@ -74,10 +82,10 @@ if IN_COLAB:
 else:
     matplotlib.use("Agg")
     PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    DATA_DIR = PROJECT_ROOT / "data" / "folds"
+    DATA_DIR = PROJECT_ROOT / "data" / FOLDS_NAME
     IMAGE_DIR = PROJECT_ROOT / "data" / IMAGE_FOLDER_NAME
     LOGS_DIR = PROJECT_ROOT / "plots"
-    BIOCLIP_MODELS_DIR = PROJECT_ROOT / "models" / "bioclip"
+    BIOCLIP_MODELS_DIR = PROJECT_ROOT / "models" / MODELS_SUBDIR
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------
@@ -141,9 +149,21 @@ class SnakeDataset(Dataset):
         return image, torch.tensor(row['class_id'], dtype=torch.long), torch.tensor(row['MIVS'], dtype=torch.float32)
 
 normalize = transforms.Normalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
-train_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(), transforms.RandomRotation(15), transforms.ToTensor(), normalize
-])
+if AUGMENTATION == 'strong':
+    # Erősebb augmentáció a túltanulás ellen (train loss ~0.2 vs val loss ~2.1): a kígyó méretének/pozíciójának
+    # szórása (RandomResizedCrop), fény- és színkülönbségek (enyhe ColorJitter, a faj színe fontos, ezért kicsi a hue),
+    # valamint apró kitakarások (RandomErasing).
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(IMAGE_SIZE, scale=(0.5, 1.0), ratio=(0.75, 1.3333)),
+        transforms.RandomHorizontalFlip(), transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02),
+        transforms.ToTensor(), normalize,
+        transforms.RandomErasing(p=0.25, scale=(0.02, 0.1)),
+    ])
+else:
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(), transforms.RandomRotation(15), transforms.ToTensor(), normalize
+    ])
 val_transform = transforms.Compose([transforms.ToTensor(), normalize])
 
 # ---------------------------------------------------------
