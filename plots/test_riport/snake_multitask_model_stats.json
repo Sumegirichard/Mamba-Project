@@ -1,0 +1,23 @@
+{
+  "kepek_szama": 64,
+  "modell": "snake_multitask_model",
+  "bemeneti_meret": 224,
+  "osszes_ido_s": 4.44,
+  "kepbetoltes_ido_s": 0.13,
+  "modell_ido_s": 4.31,
+  "modell_ms_per_kep": 67.34,
+  "modell_kep_per_s": 14.9,
+  "atlag_faj_magabiztossag": 0.0684,
+  "median_faj_magabiztossag": 0.0681,
+  "magabiztos_kepek_90_szazalek": 0.0,
+  "bizonytalan_kepek_50_alatt": 1.0,
+  "atlag_top1_top2_kulonbseg": 0.0037,
+  "atlag_entropia": 4.683,
+  "megjosolt_fajok_szama": 1,
+  "osszes_faj": 296,
+  "merges_arany_venomous_head": 0.0,
+  "merges_arany_fajbol": 0.0,
+  "merges_arany_tanito_halmaz": 0.2,
+  "fejek_egyezese": 1.0,
+  "bizonytalan_merges_zona_0.3_0.7": 0.0
+}

@@ -1,0 +1,43 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Modell betöltése: models/bioclip_384_last_state_fold_1.pth (bioclip)
+Checkpoint: 17. epoch, best_val_loss=2.093288860212152
+Eszköz: cpu
+Bemeneti méret: 384x384
+1000 kép feldolgozása...
+  16/1000  32/1000  48/1000  64/1000  80/1000  96/1000  112/1000  128/1000  144/1000  160/1000  176/1000  192/1000  208/1000  224/1000  240/1000  256/1000  272/1000  288/1000  304/1000  320/1000  336/1000  352/1000  368/1000  384/1000  400/1000  416/1000  432/1000  448/1000  464/1000  480/1000  496/1000  512/1000  528/1000  544/1000  560/1000  576/1000  592/1000  608/1000  624/1000  640/1000  656/1000  672/1000  688/1000  704/1000  720/1000  736/1000  752/1000  768/1000  784/1000  800/1000  816/1000  832/1000  848/1000  864/1000  880/1000  896/1000  912/1000  928/1000  944/1000  960/1000  976/1000  992/1000  1000/1000
+
+Kész. Riport: C:\Users\Viktor\Desktop\mamba\Mamba-Project\plots\fold1_riport\bioclip_384_last_state_fold_1_fold1_train_images_384_letterboxed_riport.html
+Predikciók: C:\Users\Viktor\Desktop\mamba\Mamba-Project\plots\fold1_riport\bioclip_384_last_state_fold_1_fold1_train_images_384_letterboxed_predictions.csv
+{
+  "kepek_szama": 1000,
+  "modell": "bioclip_384_last_state_fold_1_fold1_train_images_384_letterboxed",
+  "bemeneti_meret": 384,
+  "osszes_ido_s": 587.03,
+  "kepbetoltes_ido_s": 12.19,
+  "modell_ido_s": 574.84,
+  "modell_ms_per_kep": 574.84,
+  "modell_kep_per_s": 1.7,
+  "atlag_faj_magabiztossag": 0.7619,
+  "median_faj_magabiztossag": 0.8758,
+  "magabiztos_kepek_90_szazalek": 0.467,
+  "bizonytalan_kepek_50_alatt": 0.21,
+  "atlag_top1_top2_kulonbseg": 0.6538,
+  "atlag_entropia": 0.8,
+  "megjosolt_fajok_szama": 259,
+  "osszes_faj": 296,
+  "merges_arany_venomous_head": 0.236,
+  "merges_arany_fajbol": 0.209,
+  "merges_arany_tanito_halmaz": 0.2,
+  "fejek_egyezese": 0.939,
+  "bizonytalan_merges_zona_0.3_0.7": 0.072,
+  "cimkezett_kepek": 1000,
+  "faj_pontossag": 0.674,
+  "faj_top5_pontossag": 0.884,
+  "faj_macro_f1": 0.5884,
+  "merges_pontossag": 0.913,
+  "merges_visszahivas": 0.8433,
+  "merges_pontossag_fajbol": 0.944,
+  "merges_kigyo_nem_merges_fajkent": 0.1475,
+  "predikcio_vs_tanito_gyakorisag_korrelacio": 0.719
+}

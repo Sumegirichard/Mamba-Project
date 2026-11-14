@@ -1,0 +1,87 @@
+BioCLIP ujratanitasa a csoportos (observation_id szerinti) foldokkal
+====================================================================
+
+MIERT KELL UJRATANITANI
+- A regi foldok (data/folds) StratifiedKFold-dal keszultek class_id alapjan. Egy megfigyeles (observation_id)
+  kepei szetszorodtak a train es a val kozott: a val kepek ~55%-anak volt testvere a trainben.
+- Ennek hatasa: a testverrel rendelkezo val kepeken 75% a fajpontossag, a nelkulukon 58%
+  (fold 1, BioCLIP 384, 1000 kepes minta). A naploban latott ~68-69% val_acc optimista.
+- Az uj foldok (data/folds_grouped, src/kfold_grouped.py) StratifiedGroupKFold-dal keszultek
+  observation_id csoportokkal, seed 42. Ellenorizve: 0 kozos observation_id train es val kozott,
+  mind a 296 faj benne van minden val-ban, a merges arany 0.200 minden foldban.
+- A regi modellek a jelenlegi val megfigyelesek testverkepein tanultak, ezert az uj foldokon
+  nem merhetok tisztan. Ujra kell tanitani.
+
+AUGMENTACIO (uj)
+- Mindket scripten az elejen: AUGMENTATION = 'strong' (alap) vagy 'basic' (regi: tukrozes + forgatas).
+- 'strong' = RandomResizedCrop(scale 0.5-1) + tukrozes + forgatas 15 fok + enyhe ColorJitter (hue csak 0.02,
+  mert a faj szine fontos) + RandomErasing(p=0.25). Mixup/CutMix es label smoothing NINCS beepitve
+  (a koltsegerzekeny loss atirasat igenyelne).
+- A kimenet kulon mappaba megy: bioclip_grouped_aug / BioClip_grouped_aug ('strong'), bioclip_grouped / BioClip_grouped ('basic').
+- Tisztan merheto hatashoz ugyanazt a foldot ket beallitassal kell lefuttatni (basic es strong), ugyanazzal a seeddel.
+  Egyetlen futas nem mutatja meg, hogy az augmentacio javitott-e.
+
+MIT ALLITOTTAM BE (a regi eredmenyek erintetlenek maradnak)
+- Drive: Mamba/CSV files/folds_grouped/ (uj mappa, a regi folds mellett; fajlok hash-sel ellenorizve)
+- model_bioclip.py es model_bioclip384.py tetejen 3 uj konstans:
+    FOLDS_NAME    = 'folds_grouped'
+    MODELS_SUBDIR = 'bioclip_grouped'    -> sulyok: Mamba/models/bioclip_grouped/
+    LOGS_SUBDIR   = 'BioClip_grouped'    -> logok:  Mamba/Logs/BioClip_grouped/
+- Fontos: a script ujrafuttatasnal kihagyja a tanitast, ha a kimeneti mappaban mar van
+  bioclip_model_fold_X.pth (224) vagy a 384-es last_state. Ezert kell az uj kimeneti mappa.
+  Ha egy foldot ujra akarsz tanitani, torold a bioclip_grouped mappabol az adott fold fajljait.
+
+LR FINDEREK (lr_finder_bioclip_warmup.py, lr_finder_bioclip_backbone.py) - ujrafuttatas ajanlott
+- Csak a fold_1_train.csv-t hasznaljak (val-t nem), ezert a regi ertekek sem szivarogtak, de az uj foldokkal
+  es az uj augmentacioval konzisztens az ujrafuttatas. Mar at vannak allitva: FOLDS_NAME, AUGMENTATION, kimeneti mappak.
+- Sorrend (a backbone finder az UJ bemelegitesi sulyokat tolti be, ezert nem futtathato elobb):
+    a) !python lr_finder_bioclip_warmup.py            -> ajanlott WARMUP_LR (JSON/plot: Logs/BioClip_grouped_aug/)
+    b) allitsd be a WARMUP_LR-t a model_bioclip.py-ban, majd futtasd csak a bemelegitest
+       (a model_bioclip.py 1. fazisa letrehozza a models/bioclip_grouped_aug/bioclip_warmup_fold_1.pth-t)
+    c) !python lr_finder_bioclip_backbone.py          -> ajanlott FINETUNE_LR
+    d) allitsd be a FINETUNE_LR-t, majd folytasd a finomhangolast es a 384-es lepest
+- A 384-es lepeshez nincs finder (FINETUNE_LR = 2e-5 valasztott ertek, nem mert).
+- Figyelem: az AUGMENTATION erteke minden scriptben egyezzen ('strong' vagy 'basic').
+- Ha az alap/erosebb augmentaciot hasonlitod ossze, mindket futashoz ugyanazt a LR-t hasznald
+  (kulonben nem tudod, melyik valtozas okozta a kulonbseget).
+
+MENET (Google Colab, GPU)
+1. Colab: Futtatas -> Futtatasi kornyezet tipusanak modositasa -> GPU. Az erosebb GPU (A100/L4) gyorsabb;
+   a 384-es futasnal a BATCH_SIZE (32) a script tetejen allithato, ha elfogyna a GPU memoria.
+   A helyi SSD-n legyen eleg hely a kepeknek (a 384-es zip 7.2 GB, kicsomagolva hasonlo).
+2. Telepites (egyszer, uj sessionenkent):
+     !pip install -q open_clip_torch scikit-learn
+3. Juttasd be a ket scriptet (src/BioClip/model_bioclip.py es model_bioclip384.py) a Colab fajljaiba
+   (feltoltes a bal oldali fajlpanelon, vagy masold oket a Drive-ra es onnan futtasd).
+   A Drive csatolast a script maga vegzi (drive.mount), a Drive-on a Mamba mappa legyen elerheto.
+4. 1. LEPES - 224x224, ketfazisu tanitas (bemelegites fagyasztott backbone-nal, majd finomhangolas):
+     !python model_bioclip.py --fold 1
+   Elvart kimenet:
+     Mamba/models/bioclip_grouped/bioclip_warmup_fold_1.pth
+     Mamba/models/bioclip_grouped/bioclip_model_fold_1.pth          (legjobb val_loss epoch)
+     Mamba/Logs/BioClip_grouped/bioclip_warmup_log_fold_1.csv, bioclip_finetune_log_fold_1.csv, plot
+5. 2. LEPES - 384x384 finomhangolas (progressive resizing; a 224-es sulyokat toltedi be, ezert az 1. lepes elobb kell):
+     !python model_bioclip384.py --fold 1
+   A 384-es script epochonkent ment (last_state), igy Colab-megszakadas utan ugyanazzal a paranccsal folytatodik.
+   Elvart kimenet:
+     Mamba/models/bioclip_grouped/bioclip_model_384_fold_1.pth       (legjobb val_loss epoch - EZT hasznald)
+     Mamba/models/bioclip_grouped/bioclip_384_last_state_fold_1.pth  (utolso epoch + optimizer, 3x nagyobb; csak folytatashoz)
+     Mamba/Logs/BioClip_grouped/bioclip_384_finetune_log_fold_1.csv, bioclip_384_fold_1_result.json, plot
+6. Tobb fold: --fold 1 2 3 (de koltseges; a kovetkezo_teendok.txt szerint k=2-re valtas is szoba johet).
+   Az eredmeny hitelessegehez legalabb 2 fold kell (szoras).
+
+ELLENORZES / ERTEKELES
+- A naplo val_acc most mar szivarogasmentes. Varhato, hogy a regi 68-69% helyett kb. 58% koruli ertek jon ki
+  (ez a valodi, uj megfigyelesekre vonatkozo teljesitmeny). A modellek sorrendje is megbizhatobb.
+- Helyi merés (ugyanaz a metrika, a tanitasi kod szamolasa szerint):
+     python src/test_small.py --model <bioclip_model_384_fold_1.pth> --fold 1 --folds-dir data/folds_grouped \
+        --sample 1000 --batch-size 16 --image-dir data/train_images_384_letterboxed
+  (a 384-es letterboxolt kepek kellenek; a kis kepeken ~10 ponttal pesszimistabb a meres)
+- Ne a *_last_state_* fajlt ertekeld, hanem a bioclip_model_384_fold_X.pth-t (legjobb val_loss).
+
+TOVABBI MEGJEGYZESEK
+- A kovetkezo modellek (ConvNeXt, Swin, EfficientNet, ResNet, Inception) scriptjei meg a regi folds mappat
+  olvassak. Az osszehasonlitashoz ezeket is at kell allitani folds_grouped-ra es ujra kell futtatni,
+  kulonben a modellek eredmenye nem hasonlithato ossze a BioCLIP-pel.
+- A rejtett teszthalmazra (test_images_*) cimke nincs, ott pontossag nem merheto. A validacios metrika
+  a modellvalasztas miatt kicsit optimista marad akkor is, ha mar nincs csoportos szivargas.
